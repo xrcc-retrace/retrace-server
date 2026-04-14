@@ -2,6 +2,3 @@
 .venv/
 __pycache__/
 *.pyc
-data/
-uploads/
-test_data/
