@@ -43,7 +43,8 @@ async def get_upload(filename: str):
     file_path = UPLOAD_DIR / filename
     if not file_path.exists():
         raise HTTPException(404, "Upload not found")
-    return FileResponse(str(file_path), media_type="video/mp4")
+    media_type = "video/quicktime" if filename.endswith(".mov") else "video/mp4"
+    return FileResponse(str(file_path), media_type=media_type)
 
 
 @app.get("/")

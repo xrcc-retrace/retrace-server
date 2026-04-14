@@ -57,7 +57,7 @@ async def process_expert_video(video_path: str, api_key: str) -> GeminiProcedure
                     file_uri=video_file.uri,
                     mime_type=video_file.mime_type,
                 ),
-                types.Part.from_text(PROCEDURE_PROMPT),
+                types.Part.from_text(text=PROCEDURE_PROMPT),
             ])
         ],
         config=types.GenerateContentConfig(

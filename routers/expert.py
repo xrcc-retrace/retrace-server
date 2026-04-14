@@ -2,6 +2,7 @@ import logging
 import shutil
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
@@ -24,8 +25,9 @@ async def upload_expert_video(video: UploadFile = File(...)):
 
     procedure_id = str(uuid.uuid4())
 
-    # Save uploaded file
-    video_path = UPLOAD_DIR / f"{procedure_id}.mp4"
+    # Save uploaded file, preserving original extension
+    ext = Path(video.filename).suffix if video.filename else ".mp4"
+    video_path = UPLOAD_DIR / f"{procedure_id}{ext}"
     logger.info("Saving uploaded video to %s", video_path)
     with open(video_path, "wb") as f:
         shutil.copyfileobj(video.file, f)
