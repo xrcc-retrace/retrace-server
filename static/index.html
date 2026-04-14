@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Retrace — SOP Review</title>
+  <style>
+    :root {
+      --bg: #0a0a0a;
+      --surface: #141414;
+      --surface-hover: #1a1a1a;
+      --border: #222;
+      --border-light: #333;
+      --text: #e5e5e5;
+      --text-secondary: #888;
+      --text-muted: #555;
+      --accent: #3b82f6;
+      --accent-dim: rgba(59, 130, 246, 0.12);
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --radius: 10px;
+      --radius-sm: 6px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    header {
+      padding: 32px 0 24px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 32px;
+    }
+
+    header h1 {
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    header h1 span {
+      color: var(--text-secondary);
+      font-weight: 400;
+    }
+
+    .procedure-list {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      background: var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .procedure-card {
+      background: var(--surface);
+      padding: 20px 24px;
+      cursor: pointer;
+      transition: background 0.15s;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .procedure-card:hover { background: var(--surface-hover); }
+
+    .procedure-card .info { flex: 1; min-width: 0; }
+
+    .procedure-card .title {
+      font-size: 15px;
+      font-weight: 500;
+      margin-bottom: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .procedure-card .meta {
+      font-size: 13px;
+      color: var(--text-secondary);
+      display: flex;
+      gap: 16px;
+    }
+
+    .procedure-card .arrow {
+      color: var(--text-muted);
+      font-size: 18px;
+      margin-left: 16px;
+      flex-shrink: 0;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 80px 24px;
+      color: var(--text-secondary);
+    }
+
+    .empty-state h2 {
+      font-size: 18px;
+      font-weight: 500;
+      margin-bottom: 8px;
+      color: var(--text);
+    }
+
+    .empty-state p { font-size: 14px; max-width: 400px; margin: 0 auto; }
+
+    .empty-state code {
+      display: block;
+      margin-top: 16px;
+      padding: 12px 16px;
+      background: var(--surface);
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      color: var(--accent);
+      text-align: left;
+      max-width: 520px;
+      margin-left: auto;
+      margin-right: auto;
+      overflow-x: auto;
+    }
+
+    .back-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--text-secondary);
+      text-decoration: none;
+      cursor: pointer;
+      padding: 6px 0;
+      margin-bottom: 24px;
+      background: none;
+      border: none;
+      font-family: inherit;
+      transition: color 0.15s;
+    }
+
+    .back-btn:hover { color: var(--text); }
+
+    .procedure-header { margin-bottom: 32px; }
+
+    .procedure-header h2 {
+      font-size: 24px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin-bottom: 8px;
+    }
+
+    .procedure-header .description {
+      font-size: 15px;
+      color: var(--text-secondary);
+      margin-bottom: 16px;
+      line-height: 1.6;
+    }
+
+    .procedure-meta {
+      display: flex;
+      gap: 24px;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .procedure-meta .label { color: var(--text-secondary); }
+
+    .steps-header {
+      font-size: 13px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+    }
+
+    .step {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-bottom: 16px;
+      overflow: hidden;
+    }
+
+    .step-header {
+      display: flex;
+      align-items: center;
+      padding: 16px 20px;
+      cursor: pointer;
+      gap: 16px;
+      transition: background 0.15s;
+    }
+
+    .step-header:hover { background: var(--surface-hover); }
+
+    .step-number {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--accent-dim);
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .step-title { flex: 1; font-size: 15px; font-weight: 500; }
+
+    .step-time {
+      font-size: 12px;
+      font-family: 'SF Mono', 'Menlo', monospace;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .step-chevron {
+      color: var(--text-muted);
+      font-size: 14px;
+      transition: transform 0.2s;
+      flex-shrink: 0;
+    }
+
+    .step.open .step-chevron { transform: rotate(90deg); }
+
+    .step-body {
+      display: none;
+      border-top: 1px solid var(--border);
+    }
+
+    .step.open .step-body { display: block; }
+
+    .step-content {
+      padding: 20px;
+      display: flex;
+      gap: 24px;
+    }
+
+    .step-video { flex-shrink: 0; width: 320px; }
+
+    .step-video video {
+      width: 100%;
+      border-radius: var(--radius-sm);
+      background: #000;
+    }
+
+    .step-video .no-clip {
+      width: 100%;
+      aspect-ratio: 16/9;
+      background: var(--surface-hover);
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
+    .step-details { flex: 1; min-width: 0; }
+
+    .step-description {
+      font-size: 14px;
+      color: var(--text-secondary);
+      line-height: 1.7;
+      margin-bottom: 16px;
+    }
+
+    .step-tags {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .tag-group label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+
+    .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
+
+    .tag {
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 100px;
+      background: var(--accent-dim);
+      color: var(--accent);
+    }
+
+    .tag.warning {
+      background: rgba(245, 158, 11, 0.12);
+      color: var(--warning);
+    }
+
+    .upload-section { margin-bottom: 32px; }
+
+    .upload-area {
+      border: 1px dashed var(--border-light);
+      border-radius: var(--radius);
+      padding: 32px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+
+    .upload-area:hover,
+    .upload-area.dragover {
+      border-color: var(--accent);
+      background: var(--accent-dim);
+    }
+
+    .upload-area p { font-size: 14px; color: var(--text-secondary); }
+    .upload-area p strong { color: var(--accent); }
+
+    .upload-progress { margin-top: 16px; display: none; }
+    .upload-progress.active { display: block; }
+
+    .progress-bar {
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 2px;
+      width: 0%;
+      transition: width 0.3s;
+    }
+
+    .progress-text { font-size: 13px; color: var(--text-secondary); }
+
+    .source-video-section { margin-bottom: 32px; }
+
+    .source-video-section summary {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      cursor: pointer;
+      padding: 8px 0;
+    }
+
+    .source-video-section video {
+      width: 100%;
+      max-width: 640px;
+      border-radius: var(--radius);
+      margin-top: 12px;
+      background: #000;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    @media (max-width: 700px) {
+      .step-content { flex-direction: column; }
+      .step-video { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Retrace <span>/ SOP Review</span></h1>
+    </header>
+    <div id="app"></div>
+  </div>
+
+  <script>
+    // All data rendered via safe DOM methods — no raw HTML injection from API data.
+    const app = document.getElementById('app');
+
+    function fmt(s) {
+      const m = Math.floor(s / 60);
+      const sec = Math.floor(s % 60);
+      return m + ':' + sec.toString().padStart(2, '0');
+    }
+
+    function fmtDate(iso) {
+      return new Date(iso).toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+      });
+    }
+
+    function el(tag, attrs, children) {
+      const e = document.createElement(tag);
+      if (attrs) Object.entries(attrs).forEach(([k, v]) => {
+        if (k === 'class') e.className = v;
+        else if (k.startsWith('data-')) e.setAttribute(k, v);
+        else if (k === 'textContent') e.textContent = v;
+        else e.setAttribute(k, v);
+      });
+      if (children) {
+        if (typeof children === 'string') e.textContent = children;
+        else if (Array.isArray(children)) children.forEach(c => { if (c) e.appendChild(c); });
+        else e.appendChild(children);
+      }
+      return e;
+    }
+
+    function navigate(view, data) {
+      app.replaceChildren();
+      if (view === 'list') renderList();
+      else if (view === 'detail') renderDetail(data);
+    }
+
+    // ── List View ──
+
+    async function renderList() {
+      // Upload section
+      const uploadSection = el('div', { class: 'upload-section' });
+      const uploadArea = el('div', { class: 'upload-area' });
+      const uploadP1 = el('p');
+      uploadP1.appendChild(el('strong', {}, 'Upload a video'));
+      uploadP1.appendChild(document.createTextNode(' to generate an SOP'));
+      uploadArea.appendChild(uploadP1);
+      uploadArea.appendChild(el('p', { style: 'font-size:12px;color:var(--text-muted);margin-top:4px' }, 'Drag & drop or click to select MP4'));
+      const fileInput = el('input', { type: 'file', accept: 'video/mp4,video/*', style: 'display:none' });
+      uploadArea.appendChild(fileInput);
+      uploadSection.appendChild(uploadArea);
+
+      const progressDiv = el('div', { class: 'upload-progress' });
+      const progressBar = el('div', { class: 'progress-bar' });
+      const progressFill = el('div', { class: 'progress-fill' });
+      progressBar.appendChild(progressFill);
+      progressDiv.appendChild(progressBar);
+      const progressText = el('p', { class: 'progress-text' }, 'Uploading...');
+      progressDiv.appendChild(progressText);
+      uploadSection.appendChild(progressDiv);
+
+      app.appendChild(uploadSection);
+
+      // Upload handlers
+      uploadArea.addEventListener('click', () => fileInput.click());
+      uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('dragover'); });
+      uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
+      uploadArea.addEventListener('drop', e => {
+        e.preventDefault();
+        uploadArea.classList.remove('dragover');
+        if (e.dataTransfer.files.length) doUpload(e.dataTransfer.files[0]);
+      });
+      fileInput.addEventListener('change', () => { if (fileInput.files.length) doUpload(fileInput.files[0]); });
+
+      function doUpload(file) {
+        const formData = new FormData();
+        formData.append('video', file);
+        const xhr = new XMLHttpRequest();
+        progressDiv.classList.add('active');
+        uploadArea.style.display = 'none';
+
+        xhr.upload.addEventListener('progress', e => {
+          if (e.lengthComputable) {
+            const pct = Math.round((e.loaded / e.total) * 100);
+            progressFill.style.width = pct + '%';
+            progressText.textContent = pct >= 100 ? 'Processing with Gemini...' : 'Uploading... ' + pct + '%';
+          }
+        });
+        xhr.addEventListener('load', () => {
+          if (xhr.status === 200) {
+            const result = JSON.parse(xhr.responseText);
+            navigate('detail', result.id);
+          } else {
+            progressText.textContent = 'Error: ' + xhr.statusText;
+            progressText.style.color = '#ef4444';
+          }
+        });
+        xhr.addEventListener('error', () => {
+          progressText.textContent = 'Upload failed — check server connection';
+          progressText.style.color = '#ef4444';
+        });
+        xhr.open('POST', '/api/expert/upload');
+        xhr.send(formData);
+      }
+
+      // Procedure list
+      const listContainer = el('div', { class: 'loading' }, 'Loading procedures...');
+      app.appendChild(listContainer);
+
+      try {
+        const res = await fetch('/api/procedures');
+        const procedures = await res.json();
+
+        listContainer.replaceChildren();
+
+        if (procedures.length === 0) {
+          listContainer.className = 'empty-state';
+          listContainer.appendChild(el('h2', {}, 'No procedures yet'));
+          listContainer.appendChild(el('p', {}, 'Upload an expert video above, or use curl:'));
+          listContainer.appendChild(el('code', {}, 'curl -X POST -F "video=@recording.mp4" http://localhost:8000/api/expert/upload'));
+          return;
+        }
+
+        listContainer.className = 'procedure-list';
+        procedures.forEach(p => {
+          const card = el('div', { class: 'procedure-card', 'data-id': p.id });
+
+          const info = el('div', { class: 'info' });
+          info.appendChild(el('div', { class: 'title' }, p.title));
+          const meta = el('div', { class: 'meta' });
+          meta.appendChild(el('span', {}, p.step_count + ' steps'));
+          meta.appendChild(el('span', {}, fmt(p.total_duration)));
+          meta.appendChild(el('span', {}, fmtDate(p.created_at)));
+          info.appendChild(meta);
+          card.appendChild(info);
+          card.appendChild(el('div', { class: 'arrow' }, '\u203A'));
+
+          card.addEventListener('click', () => navigate('detail', p.id));
+          listContainer.appendChild(card);
+        });
+      } catch (e) {
+        listContainer.className = 'empty-state';
+        listContainer.replaceChildren(el('p', {}, 'Failed to load procedures: ' + e.message));
+      }
+    }
+
+    // ── Detail View ──
+
+    async function renderDetail(id) {
+      app.appendChild(el('div', { class: 'loading' }, 'Loading procedure...'));
+
+      try {
+        const res = await fetch('/api/procedures/' + encodeURIComponent(id));
+        const proc = await res.json();
+        app.replaceChildren();
+
+        // Back button
+        const backBtn = el('button', { class: 'back-btn' }, '\u2190 All Procedures');
+        backBtn.addEventListener('click', () => navigate('list'));
+        app.appendChild(backBtn);
+
+        // Header
+        const hdr = el('div', { class: 'procedure-header' });
+        hdr.appendChild(el('h2', {}, proc.title));
+        hdr.appendChild(el('p', { class: 'description' }, proc.description));
+        const metaDiv = el('div', { class: 'procedure-meta' });
+        const addMeta = (label, value) => {
+          const s = el('span');
+          s.appendChild(el('span', { class: 'label' }, label + ' '));
+          s.appendChild(document.createTextNode(value));
+          metaDiv.appendChild(s);
+        };
+        addMeta('Steps', String(proc.steps.length));
+        addMeta('Duration', fmt(proc.total_duration));
+        addMeta('Created', fmtDate(proc.created_at));
+        hdr.appendChild(metaDiv);
+        app.appendChild(hdr);
+
+        // Source video
+        const details = document.createElement('details');
+        details.className = 'source-video-section';
+        details.appendChild(el('summary', {}, 'Source Video'));
+        const srcVideo = el('video', { controls: '', preload: 'metadata' });
+        srcVideo.appendChild(el('source', { src: '/api/uploads/' + encodeURIComponent(id) + '.mp4', type: 'video/mp4' }));
+        details.appendChild(srcVideo);
+        app.appendChild(details);
+
+        // Steps
+        app.appendChild(el('div', { class: 'steps-header' }, 'Steps'));
+
+        proc.steps.forEach(step => {
+          const stepEl = el('div', { class: 'step' });
+
+          // Header row
+          const headerRow = el('div', { class: 'step-header' });
+          headerRow.appendChild(el('div', { class: 'step-number' }, String(step.step_number)));
+          headerRow.appendChild(el('div', { class: 'step-title' }, step.title));
+          headerRow.appendChild(el('div', { class: 'step-time' }, fmt(step.timestamp_start) + ' \u2013 ' + fmt(step.timestamp_end)));
+          headerRow.appendChild(el('div', { class: 'step-chevron' }, '\u203A'));
+          headerRow.addEventListener('click', () => stepEl.classList.toggle('open'));
+          stepEl.appendChild(headerRow);
+
+          // Body
+          const body = el('div', { class: 'step-body' });
+          const content = el('div', { class: 'step-content' });
+
+          // Video/clip
+          const videoCol = el('div', { class: 'step-video' });
+          if (step.clip_url) {
+            const vid = el('video', { controls: '', preload: 'metadata' });
+            vid.appendChild(el('source', { src: step.clip_url, type: 'video/mp4' }));
+            videoCol.appendChild(vid);
+          } else {
+            videoCol.appendChild(el('div', { class: 'no-clip' }, 'No clip available'));
+          }
+          content.appendChild(videoCol);
+
+          // Details column
+          const detailsCol = el('div', { class: 'step-details' });
+          detailsCol.appendChild(el('p', { class: 'step-description' }, step.description));
+
+          const tagsDiv = el('div', { class: 'step-tags' });
+
+          if (step.tips && step.tips.length) {
+            const tipGroup = el('div', { class: 'tag-group' });
+            tipGroup.appendChild(el('label', {}, 'Tips'));
+            const tipList = el('div', { class: 'tag-list' });
+            step.tips.forEach(t => tipList.appendChild(el('span', { class: 'tag' }, t)));
+            tipGroup.appendChild(tipList);
+            tagsDiv.appendChild(tipGroup);
+          }
+
+          if (step.warnings && step.warnings.length) {
+            const warnGroup = el('div', { class: 'tag-group' });
+            warnGroup.appendChild(el('label', {}, 'Warnings'));
+            const warnList = el('div', { class: 'tag-list' });
+            step.warnings.forEach(w => warnList.appendChild(el('span', { class: 'tag warning' }, w)));
+            warnGroup.appendChild(warnList);
+            tagsDiv.appendChild(warnGroup);
+          }
+
+          detailsCol.appendChild(tagsDiv);
+          content.appendChild(detailsCol);
+          body.appendChild(content);
+          stepEl.appendChild(body);
+          app.appendChild(stepEl);
+        });
+
+      } catch (e) {
+        app.replaceChildren();
+        const backBtn = el('button', { class: 'back-btn' }, '\u2190 Back');
+        backBtn.addEventListener('click', () => navigate('list'));
+        app.appendChild(backBtn);
+        app.appendChild(el('div', { class: 'empty-state' }, 'Failed to load: ' + e.message));
+      }
+    }
+
+    navigate('list');
+  </script>
+</body>
+</html>

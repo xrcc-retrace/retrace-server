@@ -1,4 +1,3 @@
-import json
 import logging
 import shutil
 import uuid
@@ -6,10 +5,11 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from config import GEMINI_API_KEY, KEYFRAMES_DIR, PROCEDURES_DIR, UPLOAD_DIR
-from models.procedure import Procedure, ProcedureStep
+from config import GEMINI_API_KEY, CLIPS_DIR, UPLOAD_DIR
+from models.procedure import ProcedureStep
 from services.gemini_processor import process_expert_video
-from services.keyframe_extractor import extract_keyframes
+from services.clip_extractor import extract_clips
+from services.database import save_procedure
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/expert", tags=["expert"])
 
 @router.post("/upload")
 async def upload_expert_video(video: UploadFile = File(...)):
-    """Receive an expert recording, process with Gemini, extract keyframes."""
+    """Receive an expert recording, process with Gemini, extract step clips."""
     if not GEMINI_API_KEY:
         raise HTTPException(500, "GEMINI_API_KEY not configured")
 
@@ -40,22 +40,22 @@ async def upload_expert_video(video: UploadFile = File(...)):
         logger.error("Gemini processing failed: %s", e)
         raise HTTPException(500, f"Video processing failed: {e}")
 
-    # Extract keyframes
+    # Extract clips for each step
     steps_dicts = [s.model_dump() for s in gemini_output.steps]
     try:
-        keyframe_paths = await extract_keyframes(
-            str(video_path), procedure_id, steps_dicts, KEYFRAMES_DIR
+        clip_paths = await extract_clips(
+            str(video_path), procedure_id, steps_dicts, CLIPS_DIR
         )
     except Exception as e:
-        logger.error("Keyframe extraction failed: %s", e)
-        keyframe_paths = {}
+        logger.error("Clip extraction failed: %s", e)
+        clip_paths = {}
 
-    # Build procedure with keyframe URLs
+    # Build step data with clip URLs
     steps = []
     for s in gemini_output.steps:
-        keyframe_url = None
-        if s.step_number in keyframe_paths:
-            keyframe_url = f"/api/keyframes/{procedure_id}/step_{s.step_number}.jpg"
+        clip_url = None
+        if s.step_number in clip_paths:
+            clip_url = f"/api/clips/{procedure_id}/step_{s.step_number}.mp4"
         steps.append(ProcedureStep(
             step_number=s.step_number,
             title=s.title,
@@ -64,27 +64,27 @@ async def upload_expert_video(video: UploadFile = File(...)):
             timestamp_end=s.timestamp_end,
             tips=s.tips,
             warnings=s.warnings,
-            keyframe_url=keyframe_url,
+            clip_url=clip_url,
         ))
 
-    procedure = Procedure(
-        id=procedure_id,
-        title=gemini_output.title,
-        description=gemini_output.description,
-        steps=steps,
-        total_duration=gemini_output.total_duration,
-        source_video=str(video_path),
-        created_at=datetime.now(timezone.utc).isoformat(),
-    )
+    created_at = datetime.now(timezone.utc).isoformat()
 
-    # Save procedure JSON
-    procedure_file = PROCEDURES_DIR / f"{procedure_id}.json"
-    with open(procedure_file, "w") as f:
-        json.dump(procedure.model_dump(), f, indent=2)
+    # Save to database
+    procedure_dict = {
+        "id": procedure_id,
+        "title": gemini_output.title,
+        "description": gemini_output.description,
+        "total_duration": gemini_output.total_duration,
+        "source_video": str(video_path),
+        "created_at": created_at,
+    }
+    steps_dicts = [s.model_dump() for s in steps]
+    save_procedure(procedure_dict, steps_dicts)
 
     logger.info(
         "Procedure created: %s (%s, %d steps)",
-        procedure_id, procedure.title, len(steps),
+        procedure_id, gemini_output.title, len(steps),
     )
 
-    return procedure.model_dump()
+    # Return full procedure for the client
+    return {**procedure_dict, "steps": steps_dicts}

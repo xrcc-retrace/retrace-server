@@ -1,9 +1,14 @@
 import logging
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
+from config import UPLOAD_DIR
 from routers import expert, procedures
+from services.database import init_db
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,13 +24,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+init_db()
+
 app.include_router(expert.router)
 app.include_router(procedures.router)
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/api/uploads/{filename}")
+async def get_upload(filename: str):
+    """Serve uploaded source videos for review playback."""
+    file_path = UPLOAD_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(404, "Upload not found")
+    return FileResponse(str(file_path), media_type="video/mp4")
+
+
+@app.get("/")
+async def serve_dashboard():
+    """Serve the SOP review dashboard."""
+    return FileResponse(str(STATIC_DIR / "index.html"))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # Retrace — SOP Generation Server
 
-Backend server for Retrace. Receives expert-recorded videos, processes them through Gemini 2.5 Pro to generate structured Standard Operating Procedures (SOPs), and extracts reference keyframes for each step.
+Backend server for Retrace. Receives expert-recorded videos, processes them through Gemini 2.5 Pro to generate structured Standard Operating Procedures (SOPs), and extracts video clips for each step.
 
 ## Quick Start
 
@@ -13,7 +13,6 @@ Backend server for Retrace. Receives expert-recorded videos, processes them thro
 ### Setup
 
 ```bash
-cd server
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -43,7 +42,7 @@ Content-Type: multipart/form-data
 Field: video (MP4 file)
 ```
 
-Uploads an expert recording, processes it through Gemini 2.5 Pro, extracts keyframes, and returns a structured procedure. Takes 30-120 seconds depending on video length.
+Uploads an expert recording, processes it through Gemini 2.5 Pro, clips each step, and returns a structured procedure. Takes 30-120 seconds depending on video length.
 
 **Response:**
 
@@ -61,7 +60,7 @@ Uploads an expert recording, processes it through Gemini 2.5 Pro, extracts keyfr
       "timestamp_end": 8.5,
       "tips": ["Use the main switch, not standby"],
       "warnings": ["Never open panels while powered on"],
-      "keyframe_url": "/api/keyframes/uuid/step_1.jpg"
+      "clip_url": "/api/clips/uuid/step_1.mp4"
     }
   ],
   "total_duration": 180.0,
@@ -82,11 +81,13 @@ GET /api/procedures
 GET /api/procedures/{procedure_id}
 ```
 
-### Get Keyframe
+### Get Step Clip
 
 ```
-GET /api/keyframes/{procedure_id}/step_{n}.jpg
+GET /api/clips/{procedure_id}/step_{n}.mp4
 ```
+
+Returns the video clip of the expert performing step N. Clips are H.264+AAC MP4 with `faststart` for streaming playback.
 
 ## Testing with curl
 
@@ -103,8 +104,8 @@ curl http://localhost:8000/api/procedures
 # Get a specific procedure
 curl http://localhost:8000/api/procedures/{id}
 
-# Download a keyframe
-curl http://localhost:8000/api/keyframes/{id}/step_1.jpg -o keyframe.jpg
+# Download a step clip
+curl http://localhost:8000/api/clips/{id}/step_1.mp4 -o step_1.mp4
 ```
 
 ## Project Structure
@@ -118,13 +119,13 @@ server/
 │   └── procedure.py            # Pydantic models + Gemini output schema
 ├── routers/
 │   ├── expert.py               # POST /api/expert/upload
-│   └── procedures.py           # GET endpoints for procedures + keyframes
+│   └── procedures.py           # GET endpoints for procedures + clips
 ├── services/
 │   ├── gemini_processor.py     # Gemini 2.5 Pro video → structured JSON
-│   └── keyframe_extractor.py   # ffmpeg keyframe extraction
+│   └── clip_extractor.py       # ffmpeg step clip extraction
 ├── data/
 │   ├── procedures/             # Generated procedure JSON files
-│   └── keyframes/              # Extracted JPEG keyframes
+│   └── clips/                  # Extracted step video clips
 └── uploads/                    # Uploaded expert videos
 ```
 
@@ -134,5 +135,7 @@ server/
 2. iOS app uploads the MP4 to this server
 3. Server uploads the video to Gemini's Files API
 4. Gemini 2.5 Pro analyzes both visual and audio content, returns a structured procedure with timestamps
-5. Server extracts a JPEG keyframe at the midpoint of each step using ffmpeg
-6. Procedure JSON + keyframes are stored on disk and returned to the client
+5. Server clips each step from the source video using ffmpeg (H.264+AAC, faststart-enabled)
+6. Procedure JSON + clips are stored on disk and returned to the client
+
+Each step clip can be played back on the learner's glasses display when they need to see how the expert performed that specific step.

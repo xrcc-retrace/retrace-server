@@ -1,10 +1,10 @@
-import json
 import logging
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-from config import KEYFRAMES_DIR, PROCEDURES_DIR
+from config import CLIPS_DIR
+from services.database import get_procedure, list_procedures, delete_procedure
 
 logger = logging.getLogger(__name__)
 
@@ -12,37 +12,32 @@ router = APIRouter(prefix="/api", tags=["procedures"])
 
 
 @router.get("/procedures/{procedure_id}")
-async def get_procedure(procedure_id: str):
+async def get_procedure_endpoint(procedure_id: str):
     """Retrieve a generated procedure by ID."""
-    procedure_file = PROCEDURES_DIR / f"{procedure_id}.json"
-    if not procedure_file.exists():
+    proc = get_procedure(procedure_id)
+    if not proc:
         raise HTTPException(404, "Procedure not found")
-    with open(procedure_file) as f:
-        return json.load(f)
+    return proc
 
 
 @router.get("/procedures")
-async def list_procedures():
-    """List all generated procedures (id + title only)."""
-    procedures = []
-    for f in sorted(PROCEDURES_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-        with open(f) as fh:
-            data = json.load(fh)
-            procedures.append({
-                "id": data["id"],
-                "title": data["title"],
-                "description": data["description"],
-                "total_duration": data["total_duration"],
-                "step_count": len(data["steps"]),
-                "created_at": data["created_at"],
-            })
-    return procedures
+async def list_procedures_endpoint():
+    """List all generated procedures."""
+    return list_procedures()
 
 
-@router.get("/keyframes/{procedure_id}/step_{step_number}.jpg")
-async def get_keyframe(procedure_id: str, step_number: int):
-    """Serve a keyframe image for a specific procedure step."""
-    keyframe_path = KEYFRAMES_DIR / procedure_id / f"step_{step_number}.jpg"
-    if not keyframe_path.exists():
-        raise HTTPException(404, "Keyframe not found")
-    return FileResponse(str(keyframe_path), media_type="image/jpeg")
+@router.delete("/procedures/{procedure_id}")
+async def delete_procedure_endpoint(procedure_id: str):
+    """Delete a procedure and its steps."""
+    if not delete_procedure(procedure_id):
+        raise HTTPException(404, "Procedure not found")
+    return {"deleted": True}
+
+
+@router.get("/clips/{procedure_id}/step_{step_number}.mp4")
+async def get_clip(procedure_id: str, step_number: int):
+    """Serve a video clip for a specific procedure step."""
+    clip_path = CLIPS_DIR / procedure_id / f"step_{step_number}.mp4"
+    if not clip_path.exists():
+        raise HTTPException(404, "Clip not found")
+    return FileResponse(str(clip_path), media_type="video/mp4")

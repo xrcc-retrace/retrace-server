@@ -9,7 +9,7 @@ class ProcedureStep(BaseModel):
     timestamp_end: float
     tips: list[str] = []
     warnings: list[str] = []
-    keyframe_url: str | None = None
+    clip_url: str | None = None
 
 
 class Procedure(BaseModel):
