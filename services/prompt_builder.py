@@ -51,7 +51,7 @@ TOOL_DEFINITIONS = [
 ]
 
 GEMINI_CONFIG = {
-    "model": "gemini-2.5-flash-native-audio-latest",
+    "model": "gemini-2.5-flash-live-preview",
     "voice": "Puck",
 }
 

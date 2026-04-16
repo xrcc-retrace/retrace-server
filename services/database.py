@@ -43,6 +43,7 @@ def init_db():
             warnings TEXT NOT NULL DEFAULT '[]',
             completion_criteria TEXT NOT NULL DEFAULT '',
             clip_url TEXT,
+            clip_status TEXT NOT NULL DEFAULT 'ready',
             UNIQUE(procedure_id, step_number)
         );
     """)
@@ -57,6 +58,7 @@ def init_db():
             pass  # column already exists
     for col, definition in [
         ("completion_criteria", "TEXT NOT NULL DEFAULT ''"),
+        ("clip_status", "TEXT NOT NULL DEFAULT 'ready'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE steps ADD COLUMN {col} {definition}")
@@ -95,12 +97,15 @@ def update_procedure_status(procedure_id: str, status: str, error_message: str |
 
 
 def save_procedure(procedure: dict, steps: list[dict]):
-    """Update a placeholder procedure with results and insert its steps."""
+    """Update a placeholder procedure with results and insert its steps.
+
+    `procedure` must contain: id, title, description, total_duration, status.
+    """
     conn = _get_conn()
     try:
         conn.execute(
             """UPDATE procedures SET title=:title, description=:description,
-               total_duration=:total_duration, status='completed'
+               total_duration=:total_duration, status=:status
                WHERE id=:id""",
             procedure,
         )
@@ -108,10 +113,10 @@ def save_procedure(procedure: dict, steps: list[dict]):
             conn.execute(
                 """INSERT INTO steps (procedure_id, step_number, title, description,
                                       timestamp_start, timestamp_end, tips, warnings,
-                                      completion_criteria, clip_url)
+                                      completion_criteria, clip_url, clip_status)
                    VALUES (:procedure_id, :step_number, :title, :description,
                            :timestamp_start, :timestamp_end, :tips, :warnings,
-                           :completion_criteria, :clip_url)""",
+                           :completion_criteria, :clip_url, :clip_status)""",
                 {
                     "procedure_id": procedure["id"],
                     "step_number": step["step_number"],
@@ -123,10 +128,14 @@ def save_procedure(procedure: dict, steps: list[dict]):
                     "warnings": json.dumps(step.get("warnings", [])),
                     "completion_criteria": step.get("completion_criteria", ""),
                     "clip_url": step.get("clip_url"),
+                    "clip_status": step.get("clip_status", "ready"),
                 },
             )
         conn.commit()
-        logger.info("Saved procedure %s with %d steps", procedure["id"], len(steps))
+        logger.info(
+            "Saved procedure %s (status=%s) with %d steps",
+            procedure["id"], procedure.get("status"), len(steps),
+        )
     finally:
         conn.close()
 
@@ -171,6 +180,7 @@ def list_procedures() -> list[dict]:
                    p.status, p.error_message, COUNT(s.id) as step_count
             FROM procedures p
             LEFT JOIN steps s ON s.procedure_id = p.id
+            WHERE p.status IN ('processing', 'completed', 'completed_partial')
             GROUP BY p.id
             ORDER BY p.created_at DESC
         """).fetchall()

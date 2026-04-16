@@ -3,8 +3,14 @@ import logging
 
 from google import genai
 from google.genai import types
+from google.genai.errors import ServerError
 
+from config import GEMINI_MODEL
 from models.procedure import GeminiProcedureOutput
+
+FALLBACK_MODEL = "gemini-2.5-flash"
+PRO_TIMEOUT_MS = 180_000
+FLASH_TIMEOUT_MS = 120_000
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +30,20 @@ Steps should not overlap in time. Cover the entire video duration.
 Keep step titles short and action-oriented (e.g., "Remove the drip tray", "Insert cleaning tablet")."""
 
 
+_client: genai.Client | None = None
+
+
+def _get_client(api_key: str) -> genai.Client:
+    """Lazy module-level Gemini client, mirroring ephemeral_token._get_client."""
+    global _client
+    if _client is None:
+        _client = genai.Client(api_key=api_key)
+    return _client
+
+
 async def process_expert_video(video_path: str, api_key: str) -> GeminiProcedureOutput:
     """Upload video to Gemini and extract a structured procedure."""
-    client = genai.Client(api_key=api_key)
+    client = _get_client(api_key)
 
     # Upload video via Files API (blocking call, run in thread)
     logger.info("Uploading video to Gemini Files API: %s", video_path)
@@ -35,24 +52,21 @@ async def process_expert_video(video_path: str, api_key: str) -> GeminiProcedure
     )
     logger.info("Upload complete, file name: %s, state: %s", video_file.name, video_file.state)
 
-    # Poll until processing is complete
-    while video_file.state == "PROCESSING":
-        logger.info("Video still processing, waiting...")
-        await asyncio.sleep(3)
-        video_file = await asyncio.to_thread(
-            client.files.get, name=video_file.name
-        )
+    try:
+        # Poll until processing is complete
+        while video_file.state == "PROCESSING":
+            logger.info("Video still processing, waiting...")
+            await asyncio.sleep(3)
+            video_file = await asyncio.to_thread(
+                client.files.get, name=video_file.name
+            )
 
-    if video_file.state == "FAILED":
-        raise RuntimeError(f"Gemini video processing failed for {video_file.name}")
+        if video_file.state == "FAILED":
+            raise RuntimeError(f"Gemini video processing failed for {video_file.name}")
 
-    logger.info("Video processing complete, generating procedure...")
+        logger.info("Video processing complete, generating procedure...")
 
-    # Generate structured procedure
-    response = await asyncio.to_thread(
-        client.models.generate_content,
-        model="gemini-2.5-pro",
-        contents=[
+        contents = [
             types.Content(parts=[
                 types.Part.from_uri(
                     file_uri=video_file.uri,
@@ -60,21 +74,32 @@ async def process_expert_video(video_path: str, api_key: str) -> GeminiProcedure
                 ),
                 types.Part.from_text(text=PROCEDURE_PROMPT),
             ])
-        ],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=GeminiProcedureOutput,
-        ),
-    )
+        ]
 
-    logger.info("Gemini response received, parsing...")
-    result = GeminiProcedureOutput.model_validate_json(response.text)
+        def _generate(model: str, timeout_ms: int):
+            return client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=GeminiProcedureOutput,
+                    http_options=types.HttpOptions(timeout=timeout_ms),
+                ),
+            )
 
-    # Clean up uploaded file
-    try:
-        await asyncio.to_thread(client.files.delete, name=video_file.name)
-        logger.info("Cleaned up uploaded file: %s", video_file.name)
-    except Exception:
-        logger.warning("Failed to clean up uploaded file: %s", video_file.name)
+        try:
+            response = await asyncio.to_thread(_generate, GEMINI_MODEL, PRO_TIMEOUT_MS)
+        except ServerError as e:
+            if e.code != 503:
+                raise
+            logger.warning("%s returned 503, falling back to %s", GEMINI_MODEL, FALLBACK_MODEL)
+            response = await asyncio.to_thread(_generate, FALLBACK_MODEL, FLASH_TIMEOUT_MS)
 
-    return result
+        logger.info("Gemini response received, parsing...")
+        return GeminiProcedureOutput.model_validate_json(response.text)
+    finally:
+        try:
+            await asyncio.to_thread(client.files.delete, name=video_file.name)
+            logger.info("Cleaned up uploaded file: %s", video_file.name)
+        except Exception:
+            logger.warning("Failed to clean up uploaded file: %s", video_file.name)

@@ -11,6 +11,7 @@ class ProcedureStep(BaseModel):
     warnings: list[str] = []
     completion_criteria: str = ""
     clip_url: str | None = None
+    clip_status: str = "ready"  # "ready" | "failed"
 
 
 class Procedure(BaseModel):

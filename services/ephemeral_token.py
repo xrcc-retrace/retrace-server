@@ -40,18 +40,30 @@ def _get_client() -> genai.Client:
 async def create_ephemeral_token(
     system_instruction: str,
     tools: list[dict],
-    model: str = "gemini-2.0-flash-live-001",
+    model: str = "gemini-2.5-flash-live-preview",
     voice: str = "Puck",
     expire_seconds: int = 3600,
     new_session_window_seconds: int = 120,
+    resumption_handle: str | None = None,
 ) -> dict:
     """Mint an ephemeral token locked to the given session config.
+
+    Pass `resumption_handle` to bind the new session to a prior one that
+    emitted a `sessionResumptionUpdate.new_handle`. This lets the phone
+    re-open a WebSocket that continues (with compressed context) from where
+    the old one left off.
 
     Returns {"token": str, "expires_at": str, "websocket_url": str}.
     """
     now = datetime.now(UTC)
     expire_time = now + timedelta(seconds=expire_seconds)
     new_session_expire = now + timedelta(seconds=new_session_window_seconds)
+
+    resumption_config = (
+        types.SessionResumptionConfig(handle=resumption_handle)
+        if resumption_handle
+        else types.SessionResumptionConfig()
+    )
 
     try:
         client = _get_client()
@@ -89,10 +101,12 @@ async def create_ephemeral_token(
                                 target_tokens=40_000,
                             ),
                         ),
-                        session_resumption=types.SessionResumptionConfig(),
+                        session_resumption=resumption_config,
                         proactivity=types.ProactivityConfig(
                             proactive_audio=True,
                         ),
+                        input_audio_transcription=types.AudioTranscriptionConfig(),
+                        output_audio_transcription=types.AudioTranscriptionConfig(),
                     ),
                 ),
             ),
@@ -109,7 +123,10 @@ async def create_ephemeral_token(
     websocket_url = f"{GEMINI_LIVE_WSS_BASE}?access_token={token_value}"
 
     logger.info(
-        "Created ephemeral token (expires %s, model=%s)", expires_at, model
+        "Created ephemeral token (expires %s, model=%s, resumption=%s)",
+        expires_at,
+        model,
+        "yes" if resumption_handle else "no",
     )
 
     return {

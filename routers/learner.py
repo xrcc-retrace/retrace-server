@@ -80,8 +80,14 @@ async def start_session(req: SessionStartRequest):
 
 
 @router.post("/session/{session_id}/token", response_model=EphemeralTokenResponse)
-async def refresh_token(session_id: str):
-    """Issue a fresh ephemeral token for an existing session."""
+async def refresh_token(session_id: str, handle: str | None = None):
+    """Issue a fresh ephemeral token for an existing session.
+
+    Pass `?handle=<resumption_handle>` (the most recent
+    `sessionResumptionUpdate.new_handle` captured by the phone) to mint a
+    token that reopens the prior Gemini Live session with compressed context
+    preserved. Omit for a brand-new session.
+    """
     session = get_session(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
@@ -94,6 +100,7 @@ async def refresh_token(session_id: str):
         tools=TOOL_DEFINITIONS,
         model=GEMINI_CONFIG["model"],
         voice=session.get("voice", GEMINI_CONFIG["voice"]),
+        resumption_handle=handle,
     )
     return EphemeralTokenResponse(**token_data)
 
