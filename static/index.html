@@ -477,9 +477,14 @@
           }
         });
         xhr.addEventListener('load', () => {
-          if (xhr.status === 200) {
+          if (xhr.status === 200 || xhr.status === 202) {
             const result = JSON.parse(xhr.responseText);
-            navigate('detail', result.id);
+            if (result.status === 'processing') {
+              progressText.textContent = 'Processing with Gemini...';
+              pollUntilReady(result.id, progressText, progressFill, uploadArea, progressDiv);
+            } else {
+              navigate('detail', result.id);
+            }
           } else {
             progressText.textContent = 'Error: ' + xhr.statusText;
             progressText.style.color = '#ef4444';
@@ -643,6 +648,28 @@
         app.appendChild(backBtn);
         app.appendChild(el('div', { class: 'empty-state' }, 'Failed to load: ' + e.message));
       }
+    }
+
+    function pollUntilReady(id, progressText, progressFill, uploadArea, progressDiv) {
+      const interval = setInterval(async () => {
+        try {
+          const res = await fetch('/api/procedures/' + encodeURIComponent(id));
+          const proc = await res.json();
+          if (proc.status === 'completed') {
+            clearInterval(interval);
+            navigate('detail', id);
+          } else if (proc.status === 'failed') {
+            clearInterval(interval);
+            progressText.textContent = 'Processing failed: ' + (proc.error_message || 'Unknown error');
+            progressText.style.color = '#ef4444';
+            progressFill.style.width = '0%';
+          }
+        } catch (e) {
+          clearInterval(interval);
+          progressText.textContent = 'Lost connection to server';
+          progressText.style.color = '#ef4444';
+        }
+      }, 3000);
     }
 
     navigate('list');

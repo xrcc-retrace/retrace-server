@@ -9,6 +9,7 @@ class ProcedureStep(BaseModel):
     timestamp_end: float
     tips: list[str] = []
     warnings: list[str] = []
+    completion_criteria: str = ""
     clip_url: str | None = None
 
 
@@ -31,6 +32,7 @@ class GeminiProcedureStep(BaseModel):
     timestamp_end: float
     tips: list[str] = []
     warnings: list[str] = []
+    completion_criteria: str
 
 
 class GeminiProcedureOutput(BaseModel):

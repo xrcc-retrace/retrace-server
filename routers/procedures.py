@@ -1,10 +1,33 @@
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from config import CLIPS_DIR
-from services.database import get_procedure, list_procedures, delete_procedure
+from services.database import (
+    get_procedure,
+    list_procedures,
+    delete_procedure,
+    update_procedure_fields,
+    update_step_fields,
+)
+
+
+class ProcedureUpdateBody(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    step_order: Optional[list[int]] = None
+
+
+class StepUpdateBody(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    tips: Optional[list[str]] = None
+    warnings: Optional[list[str]] = None
+    timestamp_start: Optional[float] = None
+    timestamp_end: Optional[float] = None
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +55,36 @@ async def delete_procedure_endpoint(procedure_id: str):
     if not delete_procedure(procedure_id):
         raise HTTPException(404, "Procedure not found")
     return {"deleted": True}
+
+
+@router.put("/procedures/{procedure_id}")
+async def update_procedure_endpoint(procedure_id: str, body: ProcedureUpdateBody):
+    """Update procedure title, description, or step order."""
+    if not update_procedure_fields(
+        procedure_id,
+        title=body.title,
+        description=body.description,
+        step_order=body.step_order,
+    ):
+        raise HTTPException(404, "Procedure not found")
+    return get_procedure(procedure_id)
+
+
+@router.put("/procedures/{procedure_id}/steps/{step_number}")
+async def update_step_endpoint(procedure_id: str, step_number: int, body: StepUpdateBody):
+    """Update a single step's fields."""
+    if not update_step_fields(
+        procedure_id,
+        step_number,
+        title=body.title,
+        description=body.description,
+        tips=body.tips,
+        warnings=body.warnings,
+        timestamp_start=body.timestamp_start,
+        timestamp_end=body.timestamp_end,
+    ):
+        raise HTTPException(404, "Step not found")
+    return get_procedure(procedure_id)
 
 
 @router.get("/clips/{procedure_id}/step_{step_number}.mp4")

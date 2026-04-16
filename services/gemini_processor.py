@@ -16,6 +16,7 @@ For each step:
 3. Write clear instructions as if teaching a first-time learner to replicate this
 4. Include any tips the expert demonstrates or narrates (technique, positioning, tool handling)
 5. Note any safety warnings or common mistakes visible
+6. Describe the visual completion criteria — what does "done" look like for this step? Focus on observable object states that a camera could detect (e.g., "the collar is completely detached from the bar", "the weight plate is resting on the ground, no longer on the bar", "the lid is fully closed"). Be specific about what changed visually from start to finish of the step.
 
 The expert may narrate what they're doing — use both visual and audio cues to build the procedure.
 Be precise with timestamps. Each step should be a discrete, actionable unit.
