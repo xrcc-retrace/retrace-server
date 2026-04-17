@@ -60,7 +60,11 @@ async def start_session(req: SessionStartRequest):
 
     proc = session["procedure"]
     voice = session["voice"]
-    system_prompt = build_system_prompt(proc, auto_advance=session["auto_advance"])
+    system_prompt = build_system_prompt(
+        proc,
+        auto_advance=session["auto_advance"],
+        current_step_number=session["current_step"],
+    )
 
     token_data = await create_ephemeral_token(
         system_instruction=system_prompt,
@@ -93,7 +97,15 @@ async def refresh_token(session_id: str, handle: str | None = None):
         raise HTTPException(404, "Session not found")
 
     proc = session["procedure"]
-    system_prompt = build_system_prompt(proc, auto_advance=session["auto_advance"])
+    # Anchor the regenerated system prompt on the step the learner is actually
+    # on. Otherwise a resumed WebSocket reopens with step-1 guidance baked
+    # into the token's locked system_instruction, and if the client-side
+    # context-summary inject fails we silently desync.
+    system_prompt = build_system_prompt(
+        proc,
+        auto_advance=session["auto_advance"],
+        current_step_number=session["current_step"],
+    )
 
     token_data = await create_ephemeral_token(
         system_instruction=system_prompt,

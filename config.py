@@ -2,7 +2,10 @@ from pathlib import Path
 import os
 import shutil
 
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).parent
+load_dotenv(BASE_DIR / ".env")
 UPLOAD_DIR = BASE_DIR / "uploads"
 DATA_DIR = BASE_DIR / "data"
 CLIPS_DIR = DATA_DIR / "clips"

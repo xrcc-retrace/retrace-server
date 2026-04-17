@@ -51,20 +51,38 @@ TOOL_DEFINITIONS = [
 ]
 
 GEMINI_CONFIG = {
-    "model": "gemini-2.5-flash-live-preview",
+    # Empirically determined via probe_live_models.py on 2026-04-17: this is
+    # the ONLY Live model currently accepted by bidiGenerateContent on this
+    # API key. Every candidate we tried (2.5-flash-live-preview,
+    # 2.0-flash-live-001, 3.1-flash-live-preview, 2.0-flash-exp, and the
+    # other 2.5 native-audio naming variants) was rejected with 1008 "not
+    # found" or 1007 "invalid argument". Native-audio — not half-cascade —
+    # but the model supports video input, tools, context compression,
+    # session resumption, and in/out transcription per our probe.
+    "model": "gemini-2.5-flash-native-audio-preview-12-2025",
     "voice": "Puck",
 }
 
 
-def build_system_prompt(procedure: dict, auto_advance: bool = True) -> str:
+def build_system_prompt(
+    procedure: dict,
+    auto_advance: bool = True,
+    current_step_number: int = 1,
+) -> str:
     """Build a Gemini Live system prompt for coaching a learner through a procedure.
 
-    Only embeds the first step's details. Future steps are delivered
+    Only embeds the current step's details. Future steps are delivered
     exclusively through advance_step tool responses, preventing the
-    model from skipping tool calls.
+    model from skipping tool calls. On token refresh / session resumption,
+    pass the session's current step so a resumed socket doesn't reopen
+    anchored on step 1.
     """
-    first_step = procedure["steps"][0] if procedure["steps"] else None
-    current_step_text = _format_current_step(first_step) if first_step else ""
+    steps = procedure["steps"] or []
+    current_step = next(
+        (s for s in steps if s.get("step_number") == current_step_number),
+        steps[0] if steps else None,
+    )
+    current_step_text = _format_current_step(current_step) if current_step else ""
     step_progression = _STEP_PROGRESSION_AUTO if auto_advance else _STEP_PROGRESSION_MANUAL
 
     prompt = f"""You are a hands-on coaching assistant guiding a learner through a procedure step by step. The learner is working with their hands and wearing smart glasses. Keep responses concise — 1 to 2 sentences unless they ask for more detail. Supportive, encouraging tone.
@@ -100,8 +118,9 @@ You can see the learner's camera feed. Actively watch what they are doing.
 {current_step_text}"""
 
     logger.info(
-        "Built system prompt for procedure '%s' (%d steps, auto_advance=%s, %d chars)",
-        procedure["title"], len(procedure["steps"]), auto_advance, len(prompt),
+        "Built system prompt for procedure '%s' (%d steps, auto_advance=%s, current_step=%d, %d chars)",
+        procedure["title"], len(procedure["steps"]), auto_advance,
+        current_step_number, len(prompt),
     )
     return prompt
 

@@ -23,7 +23,10 @@ def create_session(procedure_id: str, auto_advance: bool = True, voice: str = "P
         "current_step": 1,
         "total_steps": len(proc["steps"]),
         "status": "in_progress",
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        # Millisecond precision — stays parseable by iOS
+        # ISO8601DateFormatter.withFractionalSeconds (which caps at 3 digits).
+        # Matches the format used by ephemeral_token.create_ephemeral_token.
+        "started_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
         "step_history": [],
         "procedure": proc,
         "auto_advance": auto_advance,
@@ -53,8 +56,13 @@ def get_current_step_detail(session_id: str) -> dict | None:
     return None
 
 
-def advance_step(session_id: str) -> dict:
-    """Mark current step complete and move to next. Returns result dict."""
+def advance_step(session_id: str, method: str = "verbal") -> dict:
+    """Mark current step complete and move to next. Returns result dict.
+
+    `method` is recorded in step_history and should reflect how the advance
+    was triggered: "visual" for auto-advance (Gemini's camera-based detection)
+    or "verbal" for manual mode (learner said "done").
+    """
     session = _sessions.get(session_id)
     if not session:
         return {"error": "Session not found"}
@@ -65,8 +73,8 @@ def advance_step(session_id: str) -> dict:
     # Record completion of current step
     session["step_history"].append({
         "step_number": session["current_step"],
-        "completed_at": datetime.now(timezone.utc).isoformat(),
-        "method": "verbal",
+        "completed_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "method": method,
     })
 
     logger.info("Session %s: step %d completed", session_id, session["current_step"])
@@ -150,7 +158,11 @@ def get_context_summary(session_id: str) -> str | None:
     proc = session["procedure"]
     current = session["current_step"]
     total = session["total_steps"]
-    completed_nums = [sh["step_number"] for sh in session["step_history"]]
+    # step_history is chronological and may repeat step numbers if the learner
+    # used go_to_step to jump back and re-complete a step. For the model's
+    # re-orientation we want a numerically-sorted unique set — "completed
+    # steps 1, 2, 3" is useful context; "completed steps 3, 1, 2, 1" is not.
+    completed_nums = sorted({sh["step_number"] for sh in session["step_history"]})
 
     step = get_current_step_detail(session_id)
     if not step:
@@ -197,9 +209,16 @@ def delete_session(session_id: str) -> bool:
     return False
 
 
+def _dispatch_advance_step(session_id: str, _args: dict) -> dict:
+    """Dispatcher wrapper — tag the completion method based on session mode."""
+    session = _sessions.get(session_id)
+    method = "visual" if session and session.get("auto_advance") else "verbal"
+    return advance_step(session_id, method=method)
+
+
 # Tool call dispatcher
 _TOOL_HANDLERS = {
-    "advance_step": lambda sid, args: advance_step(sid),
+    "advance_step": _dispatch_advance_step,
     "get_reference_clip": lambda sid, args: get_reference_clip(sid),
     "go_to_step": lambda sid, args: go_to_step(sid, args.get("step_number", 0)),
 }

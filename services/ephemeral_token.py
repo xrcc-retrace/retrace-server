@@ -40,7 +40,7 @@ def _get_client() -> genai.Client:
 async def create_ephemeral_token(
     system_instruction: str,
     tools: list[dict],
-    model: str = "gemini-2.5-flash-live-preview",
+    model: str = "gemini-2.5-flash-native-audio-preview-12-2025",
     voice: str = "Puck",
     expire_seconds: int = 3600,
     new_session_window_seconds: int = 120,
@@ -69,7 +69,12 @@ async def create_ephemeral_token(
         client = _get_client()
         token = client.auth_tokens.create(
             config=types.CreateAuthTokenConfig(
-                uses=0,  # unlimited uses within expiry window
+                # Google's ephemeral-token docs describe tokens as single-use
+                # ("can only be used to start a single session"). The iOS
+                # client mints a fresh token for every connection attempt
+                # (initial + retry + resumption), so uses=1 is sufficient
+                # and matches documented semantics — uses=0 is undocumented.
+                uses=1,
                 expire_time=expire_time,
                 new_session_expire_time=new_session_expire,
                 live_connect_constraints=types.LiveConnectConstraints(
@@ -102,6 +107,13 @@ async def create_ephemeral_token(
                             ),
                         ),
                         session_resumption=resumption_config,
+                        # proactivity.proactive_audio requires api_version=v1alpha.
+                        # The client above is v1alpha-pinned; on v1beta this field
+                        # errors with 1007 "Unknown name 'proactivity' at 'setup'".
+                        # Confirmed accepted on gemini-2.5-flash-native-audio-preview-12-2025
+                        # by probe_live_models.py. When enabled, the model may
+                        # choose to stay silent if the learner's speech isn't
+                        # directed at it — complementary to server-VAD barge-in.
                         proactivity=types.ProactivityConfig(
                             proactive_audio=True,
                         ),
@@ -119,7 +131,11 @@ async def create_ephemeral_token(
         ) from exc
 
     token_value = token.name
-    expires_at = expire_time.isoformat()
+    # Millisecond precision — iOS ISO8601DateFormatter.withFractionalSeconds
+    # only reliably parses up to 3 fractional digits. Python's default
+    # isoformat emits 6 (microseconds), which silently fails to parse and
+    # forces every validToken() call into an unnecessary network refresh.
+    expires_at = expire_time.isoformat(timespec="milliseconds")
     websocket_url = f"{GEMINI_LIVE_WSS_BASE}?access_token={token_value}"
 
     logger.info(
