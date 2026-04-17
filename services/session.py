@@ -174,14 +174,23 @@ def get_context_summary(session_id: str) -> str | None:
     else:
         completed_str = "The learner has not completed any steps yet."
 
-    # Build remaining steps list
-    remaining = [s for s in proc["steps"] if s["step_number"] > current]
-    if remaining:
-        remaining_str = "Steps remaining: " + ", ".join(
-            f"{s['step_number']} ({s['title']})" for s in remaining
-        ) + "."
-    else:
+    # Build remaining steps count — do NOT leak future step titles, per the
+    # system prompt's "you only know the current step" invariant. Counts are
+    # fine so the model knows how close it is to the end; titles would let it
+    # spoil the upcoming work verbally.
+    remaining_count = sum(1 for s in proc["steps"] if s["step_number"] > current)
+    if remaining_count == 0:
         remaining_str = "This is the final step."
+    elif remaining_count == 1:
+        remaining_str = (
+            "One more step remains after this one. Do not describe or hint at it "
+            "before calling advance_step."
+        )
+    else:
+        remaining_str = (
+            f"{remaining_count} more steps remain after this one. Do not describe "
+            "or hint at them before calling advance_step."
+        )
 
     # Current step details
     tips_str = ""
