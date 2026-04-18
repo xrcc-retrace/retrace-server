@@ -125,10 +125,17 @@ main-local-server-test/
 │   └── voice_previews/        # Pre-generated WAV previews
 ├── scripts/
 │   └── generate_voice_previews.py
+├── gemini_live_playground/    # Interactive REPL for prompt/tool tuning against the production config (no FastAPI server required)
 ├── reprocess_clips.py         # Re-run clip extraction without hitting Gemini again (after tweaking ffmpeg flags)
+├── reset_data.py              # Wipe user-generated data (DB rows, uploads, clips). Preserves code, .env, voice_previews.
 ├── test_live_session.py       # Ad-hoc integration test against a running server
 ├── probe_live_models.py       # Which Live model IDs this API key accepts + per-model proactive_audio / video input probes
+├── probe_list_models.py       # Full models.list() across v1alpha/v1beta/v1 (fallback when the curated candidate list returns nothing)
+├── probe_all_models.py        # Dump models.list() with capability filters
 ├── probe_retrace_config.py    # End-to-end verification of the production ephemeral-token config
+├── probe_31_config.py         # Bisect which LiveConnectConfig field the current Live model rejects
+├── probe_gemini_live_system_instruction.py  # Canary probe: verify Gemini honors the system prompt baked into ephemeral tokens
+├── probe_tool_reliability.py  # HIT/MISS rate for advance_step tool calls over many trials
 ├── data/
 │   ├── clips/{procedure_id}/step_{n}.mp4
 │   └── retrace.db             # SQLite WAL
@@ -201,7 +208,7 @@ curl -X POST -H "Content-Type: application/json" \
   -d '{"procedure_id":"<id>"}' http://localhost:8000/api/learner/session/start
 ```
 
-Sample videos live under `test_data/`. `test_live_session.py` drives a full Live session against a running server. `probe_live_models.py` and `probe_retrace_config.py` are the source of truth for "which models / features work right now on this API key."
+Sample videos live under `test_data/`. `test_live_session.py` drives a full Live session against a running server. The probe scripts (`probe_live_models.py`, `probe_list_models.py`, `probe_retrace_config.py`, `probe_31_config.py`, `probe_gemini_live_system_instruction.py`, `probe_tool_reliability.py`) are the source of truth for "which models / features work right now on this API key." For tuning the coaching prompt and tool flow without rebuilding the iOS app, use the interactive REPL: `python -m gemini_live_playground --procedure-id <uuid>`.
 
 ## Critical Architecture Decisions
 

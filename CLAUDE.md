@@ -127,10 +127,17 @@ main-local-server-test/
 │   └── voice_previews/        # Pre-generated WAV previews of Gemini voices
 ├── scripts/
 │   └── generate_voice_previews.py   # Regenerate the WAV previews
+├── gemini_live_playground/    # Interactive REPL (`python -m gemini_live_playground`) for behavioral tuning against the production prompt/tools/config. Text I/O via output-transcription stream; tool calls dispatch in-process against services.session. No FastAPI server required. Scenarios in scenarios/*.yaml.
 ├── reprocess_clips.py         # Re-run clip extraction for completed procedures without hitting Gemini again (after tweaking ffmpeg flags)
+├── reset_data.py              # Wipe all user-generated data (DB rows, uploads, clips) — interactive by default, --yes / --dry-run / --force flags. Preserves code, .venv, .env, voice_previews.
 ├── test_live_session.py       # Ad-hoc integration test that drives a Gemini Live session against a running server
-├── probe_live_models.py       # Which Live model IDs bidiGenerateContent accepts on this API key, plus per-model probes of proactive_audio and video input
+├── probe_live_models.py       # Which Live model IDs bidiGenerateContent accepts on this API key, plus per-model probes of proactive_audio and video input (curated candidate list)
+├── probe_list_models.py       # Full models.list() across v1alpha/v1beta/v1 — authoritative source of truth when probe_live_models.py's candidate list comes up empty
+├── probe_all_models.py        # Same dump with capability filters (generateContent, bidiGenerateContent, embedContent, …)
 ├── probe_retrace_config.py    # End-to-end verification of the production ephemeral-token config against a real Live session
+├── probe_31_config.py         # Bisect which LiveConnectConfig field the current model rejects — used when a model upgrade breaks the baseline config
+├── probe_gemini_live_system_instruction.py  # Canary probe: verify Gemini Live honors the system_instruction baked into ephemeral tokens (motivated by the open Google Developers forum report)
+├── probe_tool_reliability.py  # HIT/MISS rate for advance_step tool calls over many trials — decide if tool calling is reliable enough or if we need the out-of-band transcript fallback
 ├── data/
 │   ├── clips/{procedure_id}/step_{n}.mp4
 │   └── retrace.db             # SQLite (WAL mode)
@@ -220,7 +227,7 @@ curl -X POST -H "Content-Type: application/json" \
   -d '{"procedure_id":"<id>"}' http://localhost:8000/api/learner/session/start
 ```
 
-Sample videos live under `test_data/`. `test_live_session.py` drives a full Live session against a running server. The two probe scripts (`probe_live_models.py`, `probe_retrace_config.py`) are the source of truth for "which models/features work right now on this API key."
+Sample videos live under `test_data/`. `test_live_session.py` drives a full Live session against a running server. The probe scripts (`probe_live_models.py`, `probe_list_models.py`, `probe_retrace_config.py`, `probe_31_config.py`, `probe_gemini_live_system_instruction.py`, `probe_tool_reliability.py`) are the source of truth for "which models/features work right now on this API key" — keep them around after a model upgrade rather than rewriting from scratch. `gemini_live_playground/` is the fastest way to iterate on prompt/tool behavior without rebuilding the iOS app.
 
 ## Critical Architecture Decisions
 
