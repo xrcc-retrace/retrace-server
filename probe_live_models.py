@@ -35,18 +35,25 @@ if not API_KEY:
     sys.exit(1)
 
 CANDIDATES = [
-    # Current (known broken — our regression)
+    # === CANONICAL HALF-CASCADE (researcher's top pick for reliable tool calls) ===
+    # The 2025 forum consensus fix for native-audio's tool-call dispatch race.
+    # Note the word order: "live-2.5-flash" (not "2.5-flash-live"). Google
+    # renamed these in 2025; the old naming 404s on current API keys.
+    "gemini-live-2.5-flash-preview",
+    "gemini-live-2.5-flash",
+    # === NEWER HALF-CASCADE (community claim: fixes the audio/tool race) ===
+    "gemini-live-3.1-flash-preview",
+    "gemini-live-3.1-flash",
+    # === OLD HALF-CASCADE NAMING (keep for diagnostic — should 404) ===
     "gemini-2.5-flash-live-preview",
-    # Proposed quick fix
     "gemini-2.0-flash-live-001",
-    # Newest, per docs
     "gemini-3.1-flash-live-preview",
-    # Recent 2.5 native-audio
+    # === CURRENT PRODUCTION (native-audio; tool calling broken per research) ===
     "gemini-2.5-flash-native-audio-preview-12-2025",
-    # Alternate naming patterns seen in search results
+    # === OTHER NATIVE-AUDIO VARIANTS (reference only) ===
     "gemini-live-2.5-flash-native-audio",
     "gemini-live-2.5-flash-preview-native-audio-09-2025",
-    # Older experimental, sometimes works as a fallback
+    # === OLDER EXPERIMENTAL (rarely works) ===
     "gemini-2.0-flash-exp",
 ]
 

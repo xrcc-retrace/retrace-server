@@ -141,7 +141,13 @@ def save_procedure(procedure: dict, steps: list[dict]):
 
 
 def get_procedure(procedure_id: str) -> dict | None:
-    """Retrieve a procedure with all its steps."""
+    """Retrieve a procedure with all its steps.
+
+    `source_video` is normalized to its basename here so callers (API responses,
+    learner sessions) can build `/api/uploads/{filename}` URLs without leaking
+    the server's filesystem layout. Callers that need the on-disk path (e.g.
+    `reprocess_clips.py`) read directly from SQL with the full path intact.
+    """
     conn = _get_conn()
     try:
         row = conn.execute(
@@ -151,6 +157,8 @@ def get_procedure(procedure_id: str) -> dict | None:
             return None
 
         proc = dict(row)
+        if proc.get("source_video"):
+            proc["source_video"] = Path(proc["source_video"]).name
         step_rows = conn.execute(
             "SELECT * FROM steps WHERE procedure_id = ? ORDER BY step_number",
             (procedure_id,),
