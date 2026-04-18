@@ -1,4 +1,4 @@
-"""Verify the full Retrace Live config (minus proactive_audio) holds end-to-end.
+"""Verify the full Retrace Live config holds end-to-end.
 
 Also mints a real ephemeral token via our production code path and opens a
 session with it, so we're exercising the same flow the iOS app uses.
@@ -33,7 +33,7 @@ async def main():
     print(f"Tools: {[t['name'] for t in TOOL_DEFINITIONS]}")
 
     # 1. Direct-connect probe with the full Retrace config (api_version=v1alpha
-    # to match production ephemeral_token.py and to enable proactive_audio).
+    # to match production ephemeral_token.py).
     print("\n[1] Direct connect with full production config (v1alpha)...")
     client = genai.Client(api_key=api_key, http_options={"api_version": "v1alpha"})
     full_cfg = types.LiveConnectConfig(
@@ -60,10 +60,13 @@ async def main():
             sliding_window=types.SlidingWindow(target_tokens=40_000),
         ),
         session_resumption=types.SessionResumptionConfig(),
-        proactivity=types.ProactivityConfig(proactive_audio=True),
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
     )
+    # Non-fatal: the non-constrained path (client.aio.live.connect) rejects
+    # gemini-3.1-flash-live-preview in the current SDK with 1007. The
+    # production flow uses the ephemeral-token + BidiGenerateContentConstrained
+    # path, exercised by [2] and [3] below — those are the authoritative checks.
     try:
         async with client.aio.live.connect(
             model=GEMINI_CONFIG["model"], config=full_cfg
@@ -84,8 +87,8 @@ async def main():
                 pass
             print(f"    ✅ Direct connect OK (received_payload={got_anything})")
     except Exception as exc:
-        print(f"    ❌ Direct connect FAILED: {type(exc).__name__}: {exc}")
-        return
+        print(f"    ⚠  Direct connect FAILED (non-fatal for 3.1): {type(exc).__name__}: {exc}")
+        print("       This path isn't used in production; continuing to [2]+[3].")
 
     # 2. Ephemeral token mint (v1alpha auth_tokens) with production code
     print("\n[2] Mint ephemeral token via production code...")

@@ -89,11 +89,10 @@ A server hop would add 100–200 ms per exchange and break conversational feel. 
 
 Baked into every ephemeral token:
 
-- **Model:** `gemini-2.5-flash-native-audio-preview-12-2025` — empirically verified (`probe_live_models.py`, 2026-04-17) as the only Live model accepted by `bidiGenerateContent` on the current API key. Native-audio variant (not half-cascade), but supports video input, tools, context compression, session resumption, proactive audio, and in/out transcription.
-- **Voice:** server-authoritative list (Puck / Charon / Kore / Fenrir / Aoede / Zephyr / Enceladus / Leda). iOS reads this from `GET /api/learner/voices`. Default `Puck`.
+- **Model:** `gemini-3.1-flash-live-preview` (released 2026-03-26, public preview) — verified 2026-04-17 via the production ephemeral-token + `BidiGenerateContentConstrained.v1alpha` path. Supports video input, tools, context compression, session resumption, in/out transcription. Override via `RETRACE_LIVE_MODEL` env var for fast rollback. `turn_coverage` default flips to `TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO` on 3.1, so silent-period video frames now reach the model.
+- **Voice:** server-authoritative list (Puck / Charon / Kore / Fenrir / Aoede / Zephyr / Enceladus / Leda — all 8 verified on 3.1). iOS reads this from `GET /api/learner/voices`. Default `Puck`.
 - **Context compression:** `trigger_tokens=100_000 → target_tokens=40_000`. At ~0.5 fps video + `MEDIA_RESOLUTION_LOW`, first compression fires around 25 min, then every ~12 min.
 - **Session resumption:** Gemini periodically emits `sessionResumptionUpdate.new_handle`. Passing that handle on token refresh binds the new token to the prior session.
-- **Proactivity:** `proactive_audio=True` — the model may stay silent if the learner isn't addressing it. Requires `v1alpha`.
 - **Transcription:** both input (learner) and output (AI reply) audio are transcribed so the iOS activity feed renders text.
 - **Media resolution:** `MEDIA_RESOLUTION_LOW`.
 - **Token uses:** `uses=1`. iOS mints a fresh token per connection attempt.

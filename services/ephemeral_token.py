@@ -21,7 +21,9 @@ GEMINI_LIVE_WSS_BASE = (
     "GenerativeService.BidiGenerateContentConstrained"
 )
 
-# Lazy-initialized client — v1alpha required for auth_tokens API.
+# Lazy-initialized client. v1alpha is required for both auth_tokens.create()
+# and BidiGenerateContentConstrained — confirmed for gemini-3.1-flash-live-preview
+# on 2026-04-17 (the constrained WS endpoint 404s on v1beta).
 _client: genai.Client | None = None
 
 
@@ -49,11 +51,7 @@ def build_live_connect_config(
     LiveConnectConstraints so the phone can't alter it) and the server-side
     behavioral tuning playground (passed directly to
     `client.aio.live.connect()`). Single source of truth keeps the two paths
-    from drifting on compression / proactivity / transcription settings.
-
-    proactivity.proactive_audio requires api_version=v1alpha — callers must
-    construct their `genai.Client` with
-    `http_options={"api_version": "v1alpha"}`.
+    from drifting on compression / transcription settings.
     """
     resumption_config = (
         types.SessionResumptionConfig(handle=resumption_handle)
@@ -88,15 +86,6 @@ def build_live_connect_config(
             ),
         ),
         session_resumption=resumption_config,
-        # EXPERIMENT: proactive_audio=False to test whether the model
-        # becomes more aggressive on visual-state detection + tool dispatch
-        # (auto-advance mode). When True, the model is biased toward staying
-        # silent when the learner isn't directly addressing it, which may
-        # also suppress advance_step firing on visual completion cues.
-        # Flip back to True to restore proactive-audio behavior.
-        proactivity=types.ProactivityConfig(
-            proactive_audio=False,
-        ),
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
     )
@@ -105,7 +94,7 @@ def build_live_connect_config(
 async def create_ephemeral_token(
     system_instruction: str,
     tools: list[dict],
-    model: str = "gemini-2.5-flash-native-audio-latest",
+    model: str,
     voice: str = "Puck",
     expire_seconds: int = 3600,
     new_session_window_seconds: int = 120,

@@ -236,7 +236,6 @@ async def main():
                 sliding_window=types.SlidingWindow(target_tokens=40_000),
             ),
             session_resumption=types.SessionResumptionConfig(),
-            proactivity=types.ProactivityConfig(proactive_audio=True),
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
         )

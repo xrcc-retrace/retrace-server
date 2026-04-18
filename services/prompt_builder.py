@@ -1,5 +1,7 @@
 import logging
 
+from config import RETRACE_LIVE_MODEL
+
 logger = logging.getLogger(__name__)
 
 # Gemini Live tool definitions — session_id omitted intentionally;
@@ -8,9 +10,10 @@ TOOL_DEFINITIONS = [
     {
         "name": "advance_step",
         "description": (
-            "Mark the current step as complete and move to the next step. "
-            "Call this when the learner confirms they have finished the current step "
-            "(e.g., they say 'done', 'finished', 'next', 'I did it')."
+            "Call this the moment the learner finishes the current step — when they "
+            "say 'done', 'next', 'finished', 'ok', 'I did it', or when you visually "
+            "confirm the completion criteria are met. Call it on every step, "
+            "including the very last one — always."
         ),
         "parameters": {
             "type": "object",
@@ -51,16 +54,17 @@ TOOL_DEFINITIONS = [
 ]
 
 GEMINI_CONFIG = {
-    # Native-audio is the only Live family available on our API key (half-
-    # cascade IDs all 404 via models.list; gemini-3.1-flash-live-preview is
-    # listed but returns 1007 on every config — not yet rolled out).
-    # `-latest` tracks Google's current tip of the native-audio preview
-    # train: currently preview-12-2025 (released 2025-12-12, changelog note
-    # "handles complex workflows"); will auto-roll when the next preview
-    # ships. Full feature set (tools, session_resumption, context
-    # compression, proactive_audio, in/out transcription) empirically
-    # verified via probe_retrace_config.py.
-    "model": "gemini-2.5-flash-native-audio-latest",
+    # gemini-3.1-flash-live-preview (released 2026-03-26, public preview, no
+    # waitlist). Verified 2026-04-17 via /tmp/probe_31_constrained.py: the
+    # ephemeral-token + BidiGenerateContentConstrained.v1alpha path accepts
+    # the full Retrace config (tools, speech_config, context_window_compression,
+    # session_resumption, in/out transcription, media_resolution=LOW) — must
+    # only drop ProactivityConfig (3.1 errors "Unknown name 'proactivity'").
+    # turn_coverage default flips on 3.1 from TURN_INCLUDES_ONLY_ACTIVITY to
+    # TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO, so silent-period video frames
+    # now reach the model — fixing the visual auto-advance latency we hit on 2.5.
+    # Override at runtime via RETRACE_LIVE_MODEL env var (see config.py).
+    "model": RETRACE_LIVE_MODEL,
     "voice": "Puck",
 }
 
@@ -103,14 +107,6 @@ Title: {procedure["title"]}
 Description: {procedure["description"]}
 Total steps: {len(procedure["steps"])}
 
-=== TOOL USAGE (CRITICAL — YOU MUST FOLLOW THESE RULES) ===
-You only know the current step. You have absolutely no information about any other step.
-- NEVER describe, name, summarize, or hint at what any future step involves. You do not know this information.
-- NEVER say things like "next we'll..." or "the next step is..." before calling advance_step.
-- The advance_step tool response is the ONLY source of the next step's instructions.
-- Call get_reference_clip when the learner wants to see the expert's reference video.
-- Call go_to_step when the learner wants to jump to a specific step number. Read the step instructions from the tool response.
-
 {step_progression}
 
 === COACHING MOMENTS ===
@@ -128,11 +124,11 @@ When they seem stuck: offer ONE tip at a time, not the whole list. Or ask what t
 
 Acknowledging progress: short — usually 1-3 words ("nice", "got it", "yeah that's it"), optionally flowing into the next directive ("nice — now tighten it clockwise"). A full-sentence recognition is fine occasionally after a genuinely tough step, not after every action.
 
-Step completion (advance_step returned "completed"): a brief, warm congratulation that flows into the next action from the tool response. Do NOT summarize what they just did — they know, they just did it.
+Step completion (advance_step returned status="advanced"): give a brief warm congrats flowing into the next action drawn from the tool response. Do NOT summarize what they just did — they know, they just did it.
+
+Procedure completion (advance_step returned status="completed"): a slightly longer warm close — 1-3 sentences of real praise. This is the one moment where audio length matters more than the brevity rule.
 
 Mistake interjection: short and urgent, then the fix. "Hold on — you're turning it the wrong way, go counter-clockwise."
-
-Procedure completion (final step done): a slightly longer, warm close is welcome here. 1-3 sentences. This is the one moment where real praise is worth more than a few words.
 
 === VISUAL MONITORING ===
 You can see the learner's camera feed. Actively watch what they are doing.
@@ -150,26 +146,22 @@ You can see the learner's camera feed. Actively watch what they are doing.
     return prompt
 
 
-_STEP_PROGRESSION_AUTO = """=== STEP PROGRESSION (VISUAL DETECTION) ===
-Steps advance ONLY when you visually confirm completion through the camera feed.
-Do NOT advance when the learner says "done" or similar words — they may say this casually in conversation.
+_STEP_PROGRESSION_AUTO = """=== STEP PROGRESSION ===
+Call advance_step to move to the next step. Trigger it on either signal: the learner says they're done ("done", "next", "finished", "I did it"), OR you visually confirm the completion criteria are met. Either is enough — you do not need both. Call advance_step every time, including on the final step.
 
-How to detect step completion:
-- Check the "Completion criteria" for the current step. These describe exactly what the completed state looks like.
-- Only call advance_step when you can clearly see that ALL completion criteria are met in the camera feed.
-- Do NOT call advance_step for partial progress or ambiguous visual states.
-- Before calling advance_step, tell the learner what you observed: "I can see the collar is completely off the bar — great work!"
-- If you are unsure, ask the learner to confirm: "It looks like the collar might be off — can you confirm?"
-- Wait for the advance_step tool response before saying anything about the next step.
+You only know the current step. When advance_step returns, the response gives you the next step's instructions (status="advanced") or a procedure-complete message (status="completed"). Speak from that response. Until then, you have no information about future steps — never describe or hint at them.
 
-If the learner asks to move on or says "done" but the completion criteria are not visually met, tell them what still needs to happen."""
+Use get_reference_clip when the learner asks to see the expert's video.
+Use go_to_step when the learner asks to jump to a specific step number."""
 
 
 _STEP_PROGRESSION_MANUAL = """=== STEP PROGRESSION ===
-Steps only advance when the learner explicitly says they are done ("done", "finished", "next", "I did it").
-When they do: IMMEDIATELY call advance_step. Do not say anything about the next step until you receive the tool response.
-Do NOT advance steps based on what you see in the camera feed. Wait for verbal confirmation.
-When they say "done", visually confirm the step looks complete before calling advance_step. If it doesn't look right, tell them what needs to be fixed."""
+Call advance_step when the learner says they're done ("done", "next", "finished", "I did it"). Call it every time, including on the final step.
+
+You only know the current step. When advance_step returns, the response gives you the next step's instructions (status="advanced") or a procedure-complete message (status="completed"). Speak from that response. Until then, you have no information about future steps — never describe or hint at them.
+
+Use get_reference_clip when the learner asks to see the expert's video.
+Use go_to_step when the learner asks to jump to a specific step number."""
 
 
 def _format_current_step(step: dict) -> str:

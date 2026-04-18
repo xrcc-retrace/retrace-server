@@ -14,6 +14,14 @@ DB_PATH = DATA_DIR / "retrace.db"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-2.5-pro"
 
+# Live model id baked into every ephemeral token. Override via
+# RETRACE_LIVE_MODEL=<id> for fast rollback without a code change, e.g.
+#   RETRACE_LIVE_MODEL=gemini-2.5-flash-native-audio-preview-12-2025 python main.py
+RETRACE_LIVE_MODEL = os.environ.get(
+    "RETRACE_LIVE_MODEL",
+    "gemini-3.1-flash-live-preview",
+)
+
 # Find ffmpeg binary
 FFMPEG_PATH = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
 
