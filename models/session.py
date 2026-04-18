@@ -7,6 +7,7 @@ class SessionStartRequest(BaseModel):
     procedure_id: str
     auto_advance: bool = True
     voice: str = "Puck"
+    starting_step: int | None = None
 
 
 class ToolCallRequest(BaseModel):

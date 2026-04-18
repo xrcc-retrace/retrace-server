@@ -37,10 +37,75 @@ def _get_client() -> genai.Client:
     return _client
 
 
+def build_live_connect_config(
+    system_instruction: str,
+    tools: list[dict],
+    voice: str = "Puck",
+    resumption_handle: str | None = None,
+) -> types.LiveConnectConfig:
+    """Build the canonical Retrace Gemini Live config.
+
+    Shared by the production ephemeral-token mint (baked into the token via
+    LiveConnectConstraints so the phone can't alter it) and the server-side
+    behavioral tuning playground (passed directly to
+    `client.aio.live.connect()`). Single source of truth keeps the two paths
+    from drifting on compression / proactivity / transcription settings.
+
+    proactivity.proactive_audio requires api_version=v1alpha — callers must
+    construct their `genai.Client` with
+    `http_options={"api_version": "v1alpha"}`.
+    """
+    resumption_config = (
+        types.SessionResumptionConfig(handle=resumption_handle)
+        if resumption_handle
+        else types.SessionResumptionConfig()
+    )
+    return types.LiveConnectConfig(
+        response_modalities=["AUDIO"],
+        media_resolution="MEDIA_RESOLUTION_LOW",
+        system_instruction=types.Content(
+            parts=[types.Part(text=system_instruction)]
+        ),
+        tools=[types.Tool(function_declarations=[
+            types.FunctionDeclaration(
+                name=t["name"],
+                description=t["description"],
+                parameters=t["parameters"],
+            )
+            for t in tools
+        ])],
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name=voice,
+                )
+            )
+        ),
+        context_window_compression=types.ContextWindowCompressionConfig(
+            trigger_tokens=100_000,
+            sliding_window=types.SlidingWindow(
+                target_tokens=40_000,
+            ),
+        ),
+        session_resumption=resumption_config,
+        # EXPERIMENT: proactive_audio=False to test whether the model
+        # becomes more aggressive on visual-state detection + tool dispatch
+        # (auto-advance mode). When True, the model is biased toward staying
+        # silent when the learner isn't directly addressing it, which may
+        # also suppress advance_step firing on visual completion cues.
+        # Flip back to True to restore proactive-audio behavior.
+        proactivity=types.ProactivityConfig(
+            proactive_audio=False,
+        ),
+        input_audio_transcription=types.AudioTranscriptionConfig(),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+    )
+
+
 async def create_ephemeral_token(
     system_instruction: str,
     tools: list[dict],
-    model: str = "gemini-2.5-flash-native-audio-preview-12-2025",
+    model: str = "gemini-2.5-flash-native-audio-latest",
     voice: str = "Puck",
     expire_seconds: int = 3600,
     new_session_window_seconds: int = 120,
@@ -59,10 +124,11 @@ async def create_ephemeral_token(
     expire_time = now + timedelta(seconds=expire_seconds)
     new_session_expire = now + timedelta(seconds=new_session_window_seconds)
 
-    resumption_config = (
-        types.SessionResumptionConfig(handle=resumption_handle)
-        if resumption_handle
-        else types.SessionResumptionConfig()
+    live_config = build_live_connect_config(
+        system_instruction=system_instruction,
+        tools=tools,
+        voice=voice,
+        resumption_handle=resumption_handle,
     )
 
     try:
@@ -79,47 +145,7 @@ async def create_ephemeral_token(
                 new_session_expire_time=new_session_expire,
                 live_connect_constraints=types.LiveConnectConstraints(
                     model=model,
-                    config=types.LiveConnectConfig(
-                        response_modalities=["AUDIO"],
-                        media_resolution="MEDIA_RESOLUTION_LOW",
-                        system_instruction=types.Content(
-                            parts=[types.Part(text=system_instruction)]
-                        ),
-                        tools=[types.Tool(function_declarations=[
-                            types.FunctionDeclaration(
-                                name=t["name"],
-                                description=t["description"],
-                                parameters=t["parameters"],
-                            )
-                            for t in tools
-                        ])],
-                        speech_config=types.SpeechConfig(
-                            voice_config=types.VoiceConfig(
-                                prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                    voice_name=voice,
-                                )
-                            )
-                        ),
-                        context_window_compression=types.ContextWindowCompressionConfig(
-                            trigger_tokens=100_000,
-                            sliding_window=types.SlidingWindow(
-                                target_tokens=40_000,
-                            ),
-                        ),
-                        session_resumption=resumption_config,
-                        # proactivity.proactive_audio requires api_version=v1alpha.
-                        # The client above is v1alpha-pinned; on v1beta this field
-                        # errors with 1007 "Unknown name 'proactivity' at 'setup'".
-                        # Confirmed accepted on gemini-2.5-flash-native-audio-preview-12-2025
-                        # by probe_live_models.py. When enabled, the model may
-                        # choose to stay silent if the learner's speech isn't
-                        # directed at it — complementary to server-VAD barge-in.
-                        proactivity=types.ProactivityConfig(
-                            proactive_audio=True,
-                        ),
-                        input_audio_transcription=types.AudioTranscriptionConfig(),
-                        output_audio_transcription=types.AudioTranscriptionConfig(),
-                    ),
+                    config=live_config,
                 ),
             ),
         )

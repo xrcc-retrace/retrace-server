@@ -54,7 +54,15 @@ async def start_session(req: SessionStartRequest):
     Returns everything the phone needs to open a Gemini Live WebSocket:
     the curated system prompt, tool definitions, and Gemini config.
     """
-    session = create_session(req.procedure_id, auto_advance=req.auto_advance, voice=req.voice)
+    try:
+        session = create_session(
+            req.procedure_id,
+            auto_advance=req.auto_advance,
+            voice=req.voice,
+            starting_step=req.starting_step,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     if not session:
         raise HTTPException(404, "Procedure not found")
 

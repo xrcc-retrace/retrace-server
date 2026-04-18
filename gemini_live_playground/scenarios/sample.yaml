@@ -1,0 +1,48 @@
+# Gemini Live Playground scenario
+# ─────────────────────────────────
+# Loaded by `python -m gemini_live_playground --scenario this_file.yaml`.
+# CLI flags (--procedure-id, --voice, --manual, --text-modality) override
+# fields here.
+
+# REQUIRED. UUID from `sqlite3 data/retrace.db "SELECT id, title FROM procedures;"`.
+procedure_id: af2fd4ae-2d1a-4170-9f97-4291afecfb89
+
+# Production defaults shown.
+auto_advance: true     # true → "STEP PROGRESSION (VISUAL DETECTION)" prompt
+                       # false → "STEP PROGRESSION" (verbal-confirmation) prompt
+voice: Puck            # Puck / Charon / Kore / Fenrir / Aoede / Zephyr / Enceladus / Leda
+text_modality: false   # true → response_modalities=["TEXT"] (raw text from
+                       # model_turn.parts; faster than waiting for transcript)
+
+# Optional surgical edits to the system prompt. All fields are optional.
+prompt_overrides:
+  # Replace the entire "=== STEP PROGRESSION ... ===" block in the built
+  # prompt. Useful for A/B-testing tighter or looser advance criteria.
+  # Comment this out to keep the production block.
+  # step_progression: |
+  #   === STEP PROGRESSION (TIGHTER) ===
+  #   Steps advance ONLY on explicit "advance now" command from the learner.
+  #   Ignore all other completion signals.
+
+  # Free-form text appended to the end of the built prompt.
+  # append: |
+  #   Speak in haiku.
+
+  # Per-step completion_criteria override (keyed by step_number). Applied
+  # before build_system_prompt and patched into the in-memory session
+  # store, so the advance_step tool response also reflects the new wording.
+  # step_completion_criteria:
+  #   1: "the user has clicked the bottom button at least five times"
+  #   2: "both side buttons are visibly held down"
+
+# Optional scripted-replay turns. With `--replay` they're sent in order and
+# the playground exits when the list is exhausted. Without `--replay` they're
+# ignored (REPL is interactive).
+scripted_turns:
+  - "Hi, I'm ready to start."
+  - "Done with the bottom button."
+  - "Show me the reference clip."
+  - "Both side buttons are held."
+
+# Optional log destination. Default: gemini_live_playground/logs/run-<unix>.jsonl
+# log_file: gemini_live_playground/logs/sample-tuning.jsonl

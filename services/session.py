@@ -10,18 +10,36 @@ logger = logging.getLogger(__name__)
 _sessions: dict[str, dict] = {}
 
 
-def create_session(procedure_id: str, auto_advance: bool = True, voice: str = "Puck") -> dict:
-    """Create a new learning session for a procedure."""
+def create_session(
+    procedure_id: str,
+    auto_advance: bool = True,
+    voice: str = "Puck",
+    starting_step: int | None = None,
+) -> dict:
+    """Create a new learning session for a procedure.
+
+    `starting_step` (1-indexed) lets the caller resume at an arbitrary step —
+    the returned session's `current_step` is seeded there, and downstream the
+    system prompt is anchored on it so Gemini Live opens at step N from the
+    first frame instead of step 1.
+    """
     proc = get_procedure(procedure_id)
     if not proc:
         return None
+
+    total_steps = len(proc["steps"])
+    start_at = starting_step if starting_step is not None else 1
+    if start_at < 1 or start_at > total_steps:
+        raise ValueError(
+            f"starting_step {start_at} out of range (1..{total_steps})"
+        )
 
     session_id = str(uuid.uuid4())
     session = {
         "session_id": session_id,
         "procedure_id": procedure_id,
-        "current_step": 1,
-        "total_steps": len(proc["steps"]),
+        "current_step": start_at,
+        "total_steps": total_steps,
         "status": "in_progress",
         # Millisecond precision — stays parseable by iOS
         # ISO8601DateFormatter.withFractionalSeconds (which caps at 3 digits).
