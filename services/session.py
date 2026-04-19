@@ -11,50 +11,76 @@ _sessions: dict[str, dict] = {}
 
 
 def create_session(
-    procedure_id: str,
+    procedure_id: str | None = None,
     auto_advance: bool = True,
     voice: str = "Puck",
     starting_step: int | None = None,
-) -> dict:
-    """Create a new learning session for a procedure.
+    session_type: str = "learner",
+) -> dict | None:
+    """Create a new session in the in-memory store.
 
-    `starting_step` (1-indexed) lets the caller resume at an arbitrary step —
-    the returned session's `current_step` is seeded there, and downstream the
-    system prompt is anchored on it so Gemini Live opens at step N from the
-    first frame instead of step 1.
+    `session_type="learner"` (default) binds the session to a procedure, seeds
+    `current_step`, and populates `procedure`. `session_type="troubleshoot"`
+    creates a procedure-less diagnostic session — the troubleshoot package
+    augments it with phase/product/log fields.
+
+    `starting_step` (1-indexed, learner only) lets the caller resume at an
+    arbitrary step — the returned session's `current_step` is seeded there,
+    and downstream the system prompt is anchored on it so Gemini Live opens
+    at step N from the first frame instead of step 1.
     """
-    proc = get_procedure(procedure_id)
-    if not proc:
-        return None
+    session_id = str(uuid.uuid4())
+    started_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
-    total_steps = len(proc["steps"])
-    start_at = starting_step if starting_step is not None else 1
-    if start_at < 1 or start_at > total_steps:
-        raise ValueError(
-            f"starting_step {start_at} out of range (1..{total_steps})"
+    if procedure_id is not None:
+        proc = get_procedure(procedure_id)
+        if not proc:
+            return None
+
+        total_steps = len(proc["steps"])
+        start_at = starting_step if starting_step is not None else 1
+        if start_at < 1 or start_at > total_steps:
+            raise ValueError(
+                f"starting_step {start_at} out of range (1..{total_steps})"
+            )
+
+        session = {
+            "session_id": session_id,
+            "session_type": session_type,
+            "procedure_id": procedure_id,
+            "current_step": start_at,
+            "total_steps": total_steps,
+            "status": "in_progress",
+            # Millisecond precision — stays parseable by iOS
+            # ISO8601DateFormatter.withFractionalSeconds (which caps at 3 digits).
+            # Matches the format used by ephemeral_token.create_ephemeral_token.
+            "started_at": started_at,
+            "step_history": [],
+            "procedure": proc,
+            "auto_advance": auto_advance,
+            "voice": voice,
+        }
+        logger.info(
+            "Created %s session %s for procedure %s (%d steps)",
+            session_type, session_id, procedure_id, session["total_steps"],
+        )
+    else:
+        # Procedure-less session (e.g. troubleshoot). Mode-specific fields
+        # are added by the mode's own session helper after this returns.
+        session = {
+            "session_id": session_id,
+            "session_type": session_type,
+            "procedure_id": None,
+            "status": "in_progress",
+            "started_at": started_at,
+            "voice": voice,
+        }
+        logger.info(
+            "Created %s session %s (no procedure)",
+            session_type, session_id,
         )
 
-    session_id = str(uuid.uuid4())
-    session = {
-        "session_id": session_id,
-        "procedure_id": procedure_id,
-        "current_step": start_at,
-        "total_steps": total_steps,
-        "status": "in_progress",
-        # Millisecond precision — stays parseable by iOS
-        # ISO8601DateFormatter.withFractionalSeconds (which caps at 3 digits).
-        # Matches the format used by ephemeral_token.create_ephemeral_token.
-        "started_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
-        "step_history": [],
-        "procedure": proc,
-        "auto_advance": auto_advance,
-        "voice": voice,
-    }
     _sessions[session_id] = session
-    logger.info(
-        "Created session %s for procedure %s (%d steps)",
-        session_id, procedure_id, session["total_steps"],
-    )
     return session
 
 
@@ -243,17 +269,38 @@ def _dispatch_advance_step(session_id: str, _args: dict) -> dict:
     return advance_step(session_id, method=method)
 
 
-# Tool call dispatcher
-_TOOL_HANDLERS = {
-    "advance_step": _dispatch_advance_step,
-    "get_reference_clip": lambda sid, args: get_reference_clip(sid),
-    "go_to_step": lambda sid, args: go_to_step(sid, args.get("step_number", 0)),
+# Tool-call dispatcher, keyed by (session_type, tool_name). Per-mode packages
+# register their own handlers via register_tool_handler() at import time;
+# the learner handlers below are the bootstrapped defaults.
+_TOOL_HANDLERS: dict[tuple[str, str], callable] = {
+    ("learner", "advance_step"): _dispatch_advance_step,
+    ("learner", "get_reference_clip"): lambda sid, args: get_reference_clip(sid),
+    ("learner", "go_to_step"): lambda sid, args: go_to_step(sid, args.get("step_number", 0)),
 }
 
 
+def register_tool_handler(session_type: str, tool_name: str, handler) -> None:
+    """Register a tool-call handler for a given session type.
+
+    Per-mode packages (e.g. services.troubleshoot.handlers) call this on
+    import so the shared dispatcher can route Gemini Live tool calls without
+    knowing about each mode's specifics.
+    """
+    _TOOL_HANDLERS[(session_type, tool_name)] = handler
+    logger.info("Registered tool handler %s/%s", session_type, tool_name)
+
+
 def handle_tool_call(session_id: str, tool_name: str, arguments: dict) -> dict:
-    """Dispatch a Gemini Live tool call to the right handler."""
-    handler = _TOOL_HANDLERS.get(tool_name)
+    """Dispatch a Gemini Live tool call to the right handler.
+
+    Looked up by (session_type, tool_name) so a given tool name can have
+    different implementations per mode if needed.
+    """
+    session = _sessions.get(session_id)
+    if not session:
+        return {"error": "Session not found"}
+    session_type = session.get("session_type", "learner")
+    handler = _TOOL_HANDLERS.get((session_type, tool_name))
     if not handler:
-        return {"error": f"Unknown tool: {tool_name}"}
+        return {"error": f"Unknown tool for {session_type} session: {tool_name}"}
     return handler(session_id, arguments)

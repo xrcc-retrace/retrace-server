@@ -87,7 +87,11 @@ def build_system_prompt(
         (s for s in steps if s.get("step_number") == current_step_number),
         steps[0] if steps else None,
     )
-    current_step_text = _format_current_step(current_step) if current_step else ""
+    current_step_text = (
+        _format_current_step(current_step, procedure.get("id", ""))
+        if current_step
+        else ""
+    )
     step_progression = _STEP_PROGRESSION_AUTO if auto_advance else _STEP_PROGRESSION_MANUAL
 
     prompt = f"""You are a hands-on coaching assistant guiding a learner through a procedure. The learner is working with their hands and wearing smart glasses, so you are SPEAKING to them — not writing. Think of yourself as a skilled friend standing next to them: warm, calm, confident, focused on getting them through the task well.
@@ -130,10 +134,22 @@ Procedure completion (advance_step returned status="completed"): a slightly long
 
 Mistake interjection: short and urgent, then the fix. "Hold on — you're turning it the wrong way, go counter-clockwise."
 
-=== VISUAL MONITORING ===
-You can see the learner's camera feed. Actively watch what they are doing.
-- If you see them making a mistake or doing something incorrectly, interject immediately with a brief correction.
-- Reference what you can see to make your coaching specific (e.g., "I can see the collar is still on — keep turning it counter-clockwise").
+=== VISUAL MONITORING (heartbeat + silence protocol) ===
+You can see the learner's camera feed. The iOS client sends you a short internal marker — the exact string `[check]` — every few seconds while the learner is working silently. Treat `[check]` as an **internal diagnostic signal, not user speech**.
+
+On each `[check]`:
+- Silently compare the current camera frame to both the OBSERVABLE ERRORS list and the completion criteria inside the CURRENT STEP block.
+- If a listed OBSERVABLE ERROR is visible AND has persisted across multiple moments (not a fleeting frame), speak ONE short corrective sentence referring to what you see. Example shape: short, directive, no hedging.
+- If the step's completion criteria appear clearly met AND have persisted across multiple moments, call `advance_step`. `[check]` is the primary moment for visual advance — do not wait for the learner to say "done" if you can see the step is complete.
+- Otherwise, produce NO output at all. No audio, no text, no acknowledgement. A silent turn on `[check]` is the correct default — it means everything looks fine and the step is still in progress.
+
+Hard rules:
+- Never read the word `[check]` or the brackets out loud.
+- Never respond to `[check]` conversationally (no "sure, checking now", no "looks good", no "got it").
+- Never narrate the scene or invent details you do not clearly see — if you're not sure, stay silent.
+- Never comment on what the learner is doing correctly. Silence is the acknowledgement.
+
+Everything else (the learner's spoken questions, step completions, `advance_step` responses, barge-in) behaves normally. The silence rule applies only to the `[check]` path.
 
 === CURRENT STEP ===
 {current_step_text}"""
@@ -158,13 +174,36 @@ Use go_to_step when the learner asks to jump to a specific step number."""
 _STEP_PROGRESSION_MANUAL = """=== STEP PROGRESSION ===
 Call advance_step when the learner says they're done ("done", "next", "finished", "I did it"). Call it every time, including on the final step.
 
+
 You only know the current step. When advance_step returns, the response gives you the next step's instructions (status="advanced") or a procedure-complete message (status="completed"). Speak from that response. Until then, you have no information about future steps — never describe or hint at them.
 
 Use get_reference_clip when the learner asks to see the expert's video.
 Use go_to_step when the learner asks to jump to a specific step number."""
 
 
-def _format_current_step(step: dict) -> str:
+# TRANSITIONAL: _ERROR_CRITERIA_OVERRIDES is the legacy fallback from before
+# the `error_criteria` DB column existed. The primary source is now
+# `step["error_criteria"]` populated by Gemini 2.5 Pro at extraction time (or
+# backfilled via scripts/backfill_error_criteria.py for pre-migration
+# procedures). This dict is only consulted when step["error_criteria"] is
+# empty — safe to delete after all production procedures have been backfilled
+# or re-extracted.
+_ERROR_CRITERIA_OVERRIDES: dict[tuple[str, int], list[str]] = {
+    ("af2fd4ae-2d1a-4170-9f97-4291afecfb89", 1): [
+        "No mouse is visible in the camera view at all.",
+        "The mouse is right-side up (base not facing the camera) — it must be flipped over for this step.",
+        "The learner is pressing a button other than the circular button in the center of the mouse's base.",
+    ],
+    ("af2fd4ae-2d1a-4170-9f97-4291afecfb89", 2): [
+        "No mouse is visible in the camera view at all.",
+        "The mouse is still upside down — it must be turned right-side up for this step.",
+        "Only one side button is pressed — the two thumb-side buttons must be pressed together.",
+        "The learner is pressing the scroll wheel or top buttons instead of the two side thumb buttons.",
+    ],
+}
+
+
+def _format_current_step(step: dict, procedure_id: str = "") -> str:
     """Format a single step's full details for embedding in the prompt.
 
     Field names here are phrased so the model won't parrot them. The
@@ -176,6 +215,19 @@ def _format_current_step(step: dict) -> str:
     text += f"Long form (use only if asked how, or if they seem stuck): {step['description']}\n"
     if step.get("completion_criteria"):
         text += f"What done looks like (for your own eyes, do not recite): {step['completion_criteria']}\n"
+    # Prefer the DB column (populated by Gemini at extraction time). Fall back
+    # to the hardcoded override dict for procedures that predate the column
+    # and haven't been backfilled yet.
+    errors = step.get("error_criteria") or _ERROR_CRITERIA_OVERRIDES.get(
+        (procedure_id, step["step_number"]), [],
+    )
+    if errors:
+        text += (
+            "OBSERVABLE ERRORS (evaluate the current frame against these on every `[check]`; "
+            "interject only if one is clearly present and persists):\n"
+        )
+        for e in errors:
+            text += f"  - {e}\n"
     if step.get("tips"):
         text += "Tips (offer one at a time, only if asked or stuck): " + "; ".join(step["tips"]) + "\n"
     if step.get("warnings"):

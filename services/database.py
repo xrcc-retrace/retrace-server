@@ -42,6 +42,7 @@ def init_db():
             tips TEXT NOT NULL DEFAULT '[]',
             warnings TEXT NOT NULL DEFAULT '[]',
             completion_criteria TEXT NOT NULL DEFAULT '',
+            error_criteria TEXT NOT NULL DEFAULT '[]',
             clip_url TEXT,
             clip_status TEXT NOT NULL DEFAULT 'ready',
             UNIQUE(procedure_id, step_number)
@@ -51,6 +52,9 @@ def init_db():
     for col, definition in [
         ("status", "TEXT NOT NULL DEFAULT 'completed'"),
         ("error_message", "TEXT"),
+        # 'video' (expert upload) | 'manual' (ingested PDF via troubleshoot).
+        # Defaulted so existing rows stay valid.
+        ("source_type", "TEXT NOT NULL DEFAULT 'video'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE procedures ADD COLUMN {col} {definition}")
@@ -59,6 +63,7 @@ def init_db():
     for col, definition in [
         ("completion_criteria", "TEXT NOT NULL DEFAULT ''"),
         ("clip_status", "TEXT NOT NULL DEFAULT 'ready'"),
+        ("error_criteria", "TEXT NOT NULL DEFAULT '[]'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE steps ADD COLUMN {col} {definition}")
@@ -100,23 +105,28 @@ def save_procedure(procedure: dict, steps: list[dict]):
     """Update a placeholder procedure with results and insert its steps.
 
     `procedure` must contain: id, title, description, total_duration, status.
+    Optional: `source_type` ('video' default, 'manual' for PDF-ingested SOPs).
     """
     conn = _get_conn()
+    source_type = procedure.get("source_type", "video")
     try:
         conn.execute(
             """UPDATE procedures SET title=:title, description=:description,
-               total_duration=:total_duration, status=:status
+               total_duration=:total_duration, status=:status,
+               source_type=:source_type
                WHERE id=:id""",
-            procedure,
+            {**procedure, "source_type": source_type},
         )
         for step in steps:
             conn.execute(
                 """INSERT INTO steps (procedure_id, step_number, title, description,
                                       timestamp_start, timestamp_end, tips, warnings,
-                                      completion_criteria, clip_url, clip_status)
+                                      completion_criteria, error_criteria,
+                                      clip_url, clip_status)
                    VALUES (:procedure_id, :step_number, :title, :description,
                            :timestamp_start, :timestamp_end, :tips, :warnings,
-                           :completion_criteria, :clip_url, :clip_status)""",
+                           :completion_criteria, :error_criteria,
+                           :clip_url, :clip_status)""",
                 {
                     "procedure_id": procedure["id"],
                     "step_number": step["step_number"],
@@ -127,6 +137,7 @@ def save_procedure(procedure: dict, steps: list[dict]):
                     "tips": json.dumps(step.get("tips", [])),
                     "warnings": json.dumps(step.get("warnings", [])),
                     "completion_criteria": step.get("completion_criteria", ""),
+                    "error_criteria": json.dumps(step.get("error_criteria", [])),
                     "clip_url": step.get("clip_url"),
                     "clip_status": step.get("clip_status", "ready"),
                 },
@@ -169,6 +180,10 @@ def get_procedure(procedure_id: str) -> dict | None:
             step = dict(s)
             step["tips"] = json.loads(step["tips"])
             step["warnings"] = json.loads(step["warnings"])
+            # error_criteria may be absent on rows from pre-migration DBs if a
+            # caller somehow reaches them (init_db migrates on server start so
+            # this shouldn't happen in practice). Default to [] for safety.
+            step["error_criteria"] = json.loads(step.get("error_criteria") or "[]")
             # Remove internal DB fields from response
             step.pop("id", None)
             step.pop("procedure_id", None)
@@ -185,7 +200,8 @@ def list_procedures() -> list[dict]:
     try:
         rows = conn.execute("""
             SELECT p.id, p.title, p.description, p.total_duration, p.created_at,
-                   p.status, p.error_message, COUNT(s.id) as step_count
+                   p.status, p.error_message, p.source_type,
+                   COUNT(s.id) as step_count
             FROM procedures p
             LEFT JOIN steps s ON s.procedure_id = p.id
             WHERE p.status IN ('processing', 'completed', 'completed_partial')
@@ -237,7 +253,8 @@ def update_step_fields(procedure_id: str, step_number: int,
                        title: str | None = None, description: str | None = None,
                        tips: list[str] | None = None, warnings: list[str] | None = None,
                        timestamp_start: float | None = None,
-                       timestamp_end: float | None = None) -> bool:
+                       timestamp_end: float | None = None,
+                       error_criteria: list[str] | None = None) -> bool:
     """Update step fields. Returns True if found."""
     conn = _get_conn()
     try:
@@ -277,6 +294,11 @@ def update_step_fields(procedure_id: str, step_number: int,
             conn.execute(
                 "UPDATE steps SET timestamp_end = ? WHERE procedure_id = ? AND step_number = ?",
                 (timestamp_end, procedure_id, step_number),
+            )
+        if error_criteria is not None:
+            conn.execute(
+                "UPDATE steps SET error_criteria = ? WHERE procedure_id = ? AND step_number = ?",
+                (json.dumps(error_criteria), procedure_id, step_number),
             )
 
         conn.commit()

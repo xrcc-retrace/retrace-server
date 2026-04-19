@@ -27,6 +27,7 @@ class StepCompletion(BaseModel):
 
 class SessionState(BaseModel):
     session_id: str
+    session_type: str = "learner"  # "learner" | "troubleshoot"
     procedure_id: str
     current_step: int
     total_steps: int

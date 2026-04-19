@@ -11,8 +11,9 @@ from zeroconf import ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
 
 from config import UPLOAD_DIR
-from routers import expert, learner, procedures
+from routers import expert, learner, procedures, troubleshoot
 from services.database import init_db
+from services.troubleshoot.fixtures import schedule_fixtures_load
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,26 +37,65 @@ def _get_local_ip() -> str:
         s.close()
 
 
+def _get_mdns_hostname() -> str | None:
+    """Return the machine's `.local` mDNS hostname (no trailing dot), or None.
+
+    iOS resolves `.local` hostnames through mDNS on every request, so baking
+    this into the TXT record lets the phone cache a URL that survives DHCP
+    rotation. Returns None for degenerate hostnames so callers fall back to IP.
+    """
+    raw = socket.gethostname().rstrip(".").strip()
+    if not raw or raw.lower() == "localhost":
+        return None
+    return raw if raw.endswith(".local") else f"{raw}.local"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     init_db()
 
+    # Background fixture loader — ingests the bundled Levoit manual the
+    # first time the server runs against a fresh DB. Non-blocking so
+    # /health and API endpoints come up immediately.
+    fixtures_task = schedule_fixtures_load()
+
     local_ip = _get_local_ip()
+    mdns_hostname = _get_mdns_hostname()
+
+    properties: dict[str, str] = {
+        "host": local_ip,
+        "port": str(SERVICE_PORT),
+        "version": "0.1.0",
+    }
+    if mdns_hostname:
+        properties["hostname"] = mdns_hostname
+
+    server_arg = f"{mdns_hostname}." if mdns_hostname else None
+
     azc = AsyncZeroconf()
     info = ServiceInfo(
         SERVICE_TYPE,
         SERVICE_NAME,
         addresses=[socket.inet_aton(local_ip)],
         port=SERVICE_PORT,
-        properties={"host": local_ip, "port": str(SERVICE_PORT), "version": "0.1.0"},
+        properties=properties,
+        server=server_arg,
     )
     await azc.async_register_service(info)
-    logger.info("Bonjour: advertising %s at %s:%d", SERVICE_NAME, local_ip, SERVICE_PORT)
+    logger.info(
+        "Bonjour: advertising %s at %s:%d (hostname=%s)",
+        SERVICE_NAME,
+        local_ip,
+        SERVICE_PORT,
+        mdns_hostname or "<unavailable>",
+    )
 
     yield
 
     # Shutdown
+    if not fixtures_task.done():
+        fixtures_task.cancel()
     await azc.async_unregister_service(info)
     await azc.async_close()
     logger.info("Bonjour: service deregistered")
@@ -73,6 +113,7 @@ app.add_middleware(
 app.include_router(expert.router)
 app.include_router(learner.router)
 app.include_router(procedures.router)
+app.include_router(troubleshoot.router)
 
 STATIC_DIR = Path(__file__).parent / "static"
 

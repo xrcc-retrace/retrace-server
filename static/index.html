@@ -377,12 +377,83 @@
       .step-content { flex-direction: column; }
       .step-video { width: 100%; }
     }
+    /* Tab bar */
+    .tab-bar {
+      display: flex;
+      gap: 4px;
+      margin-top: 16px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: -1px;
+    }
+    .tab {
+      padding: 10px 16px;
+      font-size: 13px;
+      color: var(--text-secondary);
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      font-family: inherit;
+    }
+    .tab.active {
+      color: var(--text);
+      border-bottom-color: var(--accent);
+    }
+    .tab:hover:not(.active) { color: var(--text); }
+
+    /* Troubleshoot-specific */
+    .diag-card {
+      background: var(--surface);
+      padding: 16px 20px;
+      border-radius: var(--radius);
+      margin-bottom: 8px;
+      cursor: pointer;
+      border: 1px solid var(--border);
+    }
+    .diag-card:hover { background: var(--surface-hover); }
+    .diag-card .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    .diag-card .product { font-weight: 500; font-size: 14px; }
+    .diag-card .placeholder { color: var(--text-muted); font-style: italic; font-size: 13px; }
+    .diag-card .meta { font-size: 12px; color: var(--text-secondary); display: flex; gap: 12px; margin-top: 4px; }
+    .phase-pill {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+      background: var(--border); color: var(--text-secondary);
+    }
+    .phase-pill.discovering { background: rgba(100,100,100,0.3); }
+    .phase-pill.diagnosing { background: rgba(245, 158, 11, 0.18); color: var(--warning); }
+    .phase-pill.resolving  { background: rgba(59, 130, 246, 0.18); color: var(--accent); }
+    .phase-pill.resolved   { background: rgba(34, 197, 94, 0.18); color: var(--success); }
+
+    .log-list { margin-top: 16px; }
+    .log-entry {
+      padding: 10px 14px; border-left: 2px solid var(--border);
+      font-size: 13px; color: var(--text-secondary); font-family: ui-monospace, monospace;
+    }
+    .log-entry.phase { border-left-color: var(--warning); }
+    .log-entry.tool  { border-left-color: var(--accent); color: var(--text); }
+    .log-entry.handoff { border-left-color: var(--success); color: var(--text); }
+    .log-entry .ts { color: var(--text-muted); font-size: 11px; }
+    .log-entry .args, .log-entry .result {
+      margin-top: 4px; padding: 6px 8px; background: var(--bg); border-radius: 4px;
+      font-size: 11px; color: var(--text-secondary); white-space: pre-wrap; word-break: break-word;
+    }
+
+    .kv { display: grid; grid-template-columns: 140px 1fr; gap: 8px 16px; font-size: 13px; margin: 8px 0 16px; }
+    .kv .k { color: var(--text-secondary); }
+    .kv .v { color: var(--text); word-break: break-word; }
+    .kv .v.mono { font-family: ui-monospace, monospace; }
   </style>
 </head>
 <body>
   <div class="container">
     <header>
       <h1>Retrace <span>/ SOP Review</span></h1>
+      <div class="tab-bar">
+        <button class="tab active" data-tab="procedures">Procedures</button>
+        <button class="tab" data-tab="troubleshoot">Troubleshooting</button>
+      </div>
     </header>
     <div id="app"></div>
   </div>
@@ -419,11 +490,30 @@
       return e;
     }
 
+    let currentTab = 'procedures';
+    let pollTimer = null;
+
+    function stopPolling() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
     function navigate(view, data) {
+      stopPolling();
       app.replaceChildren();
       if (view === 'list') renderList();
       else if (view === 'detail') renderDetail(data);
+      else if (view === 'troubleshootList') renderTroubleshootList();
+      else if (view === 'troubleshootDetail') renderTroubleshootDetail(data);
     }
+
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === tab));
+        currentTab = tab.dataset.tab;
+        if (currentTab === 'procedures') navigate('list');
+        else navigate('troubleshootList');
+      });
+    });
 
     // ── List View ──
 
@@ -670,6 +760,204 @@
           progressText.style.color = '#ef4444';
         }
       }, 3000);
+    }
+
+    // ── Troubleshoot views ──
+
+    async function fetchDiagSessions() {
+      const res = await fetch('/api/troubleshoot/sessions');
+      if (!res.ok) throw new Error('status ' + res.status);
+      return await res.json();
+    }
+
+    async function renderTroubleshootList() {
+      const wrapper = el('div');
+      app.appendChild(wrapper);
+
+      const header = el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px' });
+      header.appendChild(el('h2', { style: 'font-size:16px;font-weight:500' }, 'Diagnostic Sessions'));
+      const refreshHint = el('p', { style: 'font-size:12px;color:var(--text-muted)' }, 'Auto-refreshing every 5s');
+      header.appendChild(refreshHint);
+      wrapper.appendChild(header);
+
+      const listEl = el('div');
+      wrapper.appendChild(listEl);
+
+      async function paint() {
+        try {
+          const sessions = await fetchDiagSessions();
+          listEl.replaceChildren();
+
+          if (sessions.length === 0) {
+            listEl.appendChild(el('div', { class: 'empty-state' }, [
+              el('h2', {}, 'No diagnostic sessions yet'),
+              el('p', {}, 'Start one with:'),
+              el('code', {}, 'curl -X POST -H "Content-Type: application/json" -d \'{"voice":"Charon"}\' http://localhost:8000/api/troubleshoot/session/start'),
+            ]));
+            return;
+          }
+
+          // Newest first
+          sessions.sort((a, b) => (b.started_at || '').localeCompare(a.started_at || ''));
+
+          sessions.forEach(s => {
+            const card = el('div', { class: 'diag-card' });
+            const row = el('div', { class: 'row' });
+
+            const left = el('div');
+            if (s.identified_product) {
+              left.appendChild(el('div', { class: 'product' }, s.identified_product.product_name));
+            } else {
+              left.appendChild(el('div', { class: 'placeholder' }, 'Diagnosing…'));
+            }
+            const meta = el('div', { class: 'meta' });
+            meta.appendChild(el('span', {}, 'started ' + fmtDate(s.started_at)));
+            if (s.candidate_procedures && s.candidate_procedures.length) {
+              meta.appendChild(el('span', {}, s.candidate_procedures.length + ' candidates'));
+            }
+            if (s.handoff_target) {
+              meta.appendChild(el('span', { style: 'color:var(--success)' }, 'handed off'));
+            }
+            left.appendChild(meta);
+            row.appendChild(left);
+
+            const right = el('div', { style: 'display:flex;gap:8px;align-items:center' });
+            const phaseClass = 'phase-pill ' + (s.phase || 'discovering');
+            right.appendChild(el('span', { class: phaseClass }, s.phase || 'discovering'));
+            right.appendChild(el('div', { class: 'arrow' }, '\u203A'));
+            row.appendChild(right);
+
+            card.appendChild(row);
+            card.addEventListener('click', () => navigate('troubleshootDetail', s.session_id));
+            listEl.appendChild(card);
+          });
+        } catch (e) {
+          listEl.replaceChildren(el('div', { class: 'empty-state' }, 'Failed to load: ' + e.message));
+        }
+      }
+
+      await paint();
+      stopPolling();
+      pollTimer = setInterval(paint, 5000);
+    }
+
+    async function renderTroubleshootDetail(sessionId) {
+      app.appendChild(el('div', { class: 'loading' }, 'Loading session...'));
+      try {
+        const res = await fetch('/api/troubleshoot/session/' + encodeURIComponent(sessionId) + '/state');
+        if (!res.ok) throw new Error('status ' + res.status);
+        const s = await res.json();
+        app.replaceChildren();
+
+        const backBtn = el('button', { class: 'back-btn' }, '\u2190 All Diagnostic Sessions');
+        backBtn.addEventListener('click', () => navigate('troubleshootList'));
+        app.appendChild(backBtn);
+
+        const hdr = el('div', { class: 'procedure-header' });
+        const title = s.identified_product ? s.identified_product.product_name : 'Diagnostic session';
+        hdr.appendChild(el('h2', {}, title));
+        const subtitle = el('p', { class: 'description' });
+        subtitle.appendChild(el('span', { class: 'phase-pill ' + (s.phase || 'discovering') }, s.phase || 'discovering'));
+        subtitle.appendChild(document.createTextNode(' · started ' + fmtDate(s.started_at)));
+        hdr.appendChild(subtitle);
+        app.appendChild(hdr);
+
+        // Key/value summary
+        const kv = el('div', { class: 'kv' });
+        const addKV = (k, v, opts = {}) => {
+          kv.appendChild(el('div', { class: 'k' }, k));
+          const vEl = el('div', { class: 'v' + (opts.mono ? ' mono' : '') });
+          if (typeof v === 'string') vEl.textContent = v;
+          else if (v instanceof Node) vEl.appendChild(v);
+          else vEl.textContent = String(v);
+          kv.appendChild(vEl);
+        };
+        addKV('Session ID', s.session_id, { mono: true });
+        addKV('Status', s.status);
+        addKV('Phase', s.phase || '(none)');
+        if (s.identified_product) {
+          const p = s.identified_product;
+          addKV('Product', (p.product_name || '') + (p.category ? ' (' + p.category + ')' : ''));
+          addKV('Confidence', p.confidence || '(none)');
+        }
+        if (s.handoff_target) {
+          const link = el('a', { href: '#', style: 'color:var(--accent)' }, s.handoff_target);
+          link.addEventListener('click', e => {
+            e.preventDefault();
+            currentTab = 'procedures';
+            document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'procedures'));
+            navigate('detail', s.handoff_target);
+          });
+          addKV('Handoff target', link);
+        }
+        if (s.handoff_learner_session_id) {
+          addKV('Learner session', s.handoff_learner_session_id, { mono: true });
+        }
+        if (s.generated_procedure_id) {
+          addKV('Generated procedure', s.generated_procedure_id, { mono: true });
+        }
+        app.appendChild(kv);
+
+        // Candidate procedures
+        if (s.candidate_procedures && s.candidate_procedures.length) {
+          app.appendChild(el('div', { class: 'steps-header' }, 'Candidate procedures'));
+          const list = el('div', { class: 'procedure-list' });
+          s.candidate_procedures.forEach(c => {
+            const card = el('div', { class: 'procedure-card' });
+            const info = el('div', { class: 'info' });
+            info.appendChild(el('div', { class: 'title' }, c.title || c.procedure_id));
+            const meta = el('div', { class: 'meta' });
+            if (c.confidence) meta.appendChild(el('span', {}, c.confidence + ' confidence'));
+            if (c.match_reason) meta.appendChild(el('span', {}, c.match_reason));
+            info.appendChild(meta);
+            card.appendChild(info);
+            card.appendChild(el('div', { class: 'arrow' }, '\u203A'));
+            card.addEventListener('click', () => {
+              currentTab = 'procedures';
+              document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'procedures'));
+              navigate('detail', c.procedure_id);
+            });
+            list.appendChild(card);
+          });
+          app.appendChild(list);
+        }
+
+        // Diagnostic log timeline
+        app.appendChild(el('div', { class: 'steps-header' }, 'Diagnostic log'));
+        const logList = el('div', { class: 'log-list' });
+        (s.diagnostic_log || []).forEach(e => {
+          const cls = e.event === 'tool_call' ? 'tool'
+            : e.event === 'phase_transition' ? 'phase'
+            : e.event === 'handoff_executed' ? 'handoff'
+            : '';
+          const entry = el('div', { class: 'log-entry ' + cls });
+          entry.appendChild(el('div', { class: 'ts' }, fmtDate(e.timestamp)));
+          if (e.event === 'tool_call') {
+            entry.appendChild(el('div', {}, 'TOOL · ' + e.tool));
+            if (e.args && Object.keys(e.args).length) {
+              entry.appendChild(el('div', { class: 'args' }, 'args: ' + JSON.stringify(e.args, null, 2)));
+            }
+            if (e.result) {
+              entry.appendChild(el('div', { class: 'result' }, 'result: ' + JSON.stringify(e.result, null, 2)));
+            }
+          } else if (e.event === 'phase_transition') {
+            entry.appendChild(el('div', {}, 'PHASE · ' + (e.from || '(start)') + ' \u2192 ' + e.to));
+          } else if (e.event === 'handoff_executed') {
+            entry.appendChild(el('div', {}, 'HANDOFF \u2192 learner ' + (e.learner_session_id || '') + ' on procedure ' + (e.procedure_id || '')));
+          } else {
+            entry.appendChild(el('div', {}, e.event));
+          }
+          logList.appendChild(entry);
+        });
+        app.appendChild(logList);
+
+      } catch (e) {
+        app.replaceChildren();
+        const backBtn = el('button', { class: 'back-btn' }, '\u2190 Back');
+        backBtn.addEventListener('click', () => navigate('troubleshootList'));
+        app.appendChild(backBtn);
+        app.appendChild(el('div', { class: 'empty-state' }, 'Failed to load: ' + e.message));
+      }
     }
 
     navigate('list');

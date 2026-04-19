@@ -118,11 +118,10 @@ async def run_trial(trial_n: int, utterance: str) -> dict:
                 return {"hit": False, "reason": "no_setupComplete", "transcript": ""}
 
             # Send the learner's utterance as a user turn.
+            # 3.1 Live: clientContent.turns is silently dropped for live input;
+            # realtimeInput.text is the correct channel. Migrated 2026-04-18.
             user_turn = json.dumps({
-                "clientContent": {
-                    "turns": [{"role": "user", "parts": [{"text": utterance}]}],
-                    "turnComplete": True,
-                }
+                "realtimeInput": {"text": utterance}
             })
             await ws.send(user_turn)
 

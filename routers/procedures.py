@@ -28,6 +28,7 @@ class StepUpdateBody(BaseModel):
     warnings: Optional[list[str]] = None
     timestamp_start: Optional[float] = None
     timestamp_end: Optional[float] = None
+    error_criteria: Optional[list[str]] = None
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,7 @@ async def update_step_endpoint(procedure_id: str, step_number: int, body: StepUp
         warnings=body.warnings,
         timestamp_start=body.timestamp_start,
         timestamp_end=body.timestamp_end,
+        error_criteria=body.error_criteria,
     ):
         raise HTTPException(404, "Step not found")
     return get_procedure(procedure_id)
