@@ -1,0 +1,40 @@
+name: Deploy to Lightsail
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: retrace-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 10m
+          script: |
+            set -euo pipefail
+            cd ~/main-local-server-test
+            echo "::group::git pull"
+            git pull --ff-only
+            echo "::endgroup::"
+            echo "::group::pip install"
+            source .venv/bin/activate
+            pip install -r requirements.txt
+            echo "::endgroup::"
+            echo "::group::restart service"
+            sudo systemctl restart retrace
+            sleep 3
+            sudo systemctl status retrace --no-pager | head -20
+            echo "::endgroup::"
+            echo "::group::health check"
+            curl -sfS http://localhost:8000/health
+            echo ""
+            echo "::endgroup::"
