@@ -1,4 +1,5 @@
 import logging
+import os
 import socket
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -60,45 +61,56 @@ async def lifespan(app: FastAPI):
     # /health and API endpoints come up immediately.
     fixtures_task = schedule_fixtures_load()
 
-    local_ip = _get_local_ip()
-    mdns_hostname = _get_mdns_hostname()
+    # Bonjour only makes sense on the LAN. In cloud deploys (AWS VPC doesn't
+    # support multicast anyway) the iOS app reaches us via a known hostname,
+    # so skip the advertisement and the startup/shutdown noise it brings.
+    advertise_bonjour = os.getenv("RETRACE_ADVERTISE_BONJOUR", "1") == "1"
+    azc: AsyncZeroconf | None = None
+    info: ServiceInfo | None = None
 
-    properties: dict[str, str] = {
-        "host": local_ip,
-        "port": str(SERVICE_PORT),
-        "version": "0.1.0",
-    }
-    if mdns_hostname:
-        properties["hostname"] = mdns_hostname
+    if advertise_bonjour:
+        local_ip = _get_local_ip()
+        mdns_hostname = _get_mdns_hostname()
 
-    server_arg = f"{mdns_hostname}." if mdns_hostname else None
+        properties: dict[str, str] = {
+            "host": local_ip,
+            "port": str(SERVICE_PORT),
+            "version": "0.1.0",
+        }
+        if mdns_hostname:
+            properties["hostname"] = mdns_hostname
 
-    azc = AsyncZeroconf()
-    info = ServiceInfo(
-        SERVICE_TYPE,
-        SERVICE_NAME,
-        addresses=[socket.inet_aton(local_ip)],
-        port=SERVICE_PORT,
-        properties=properties,
-        server=server_arg,
-    )
-    await azc.async_register_service(info)
-    logger.info(
-        "Bonjour: advertising %s at %s:%d (hostname=%s)",
-        SERVICE_NAME,
-        local_ip,
-        SERVICE_PORT,
-        mdns_hostname or "<unavailable>",
-    )
+        server_arg = f"{mdns_hostname}." if mdns_hostname else None
+
+        azc = AsyncZeroconf()
+        info = ServiceInfo(
+            SERVICE_TYPE,
+            SERVICE_NAME,
+            addresses=[socket.inet_aton(local_ip)],
+            port=SERVICE_PORT,
+            properties=properties,
+            server=server_arg,
+        )
+        await azc.async_register_service(info)
+        logger.info(
+            "Bonjour: advertising %s at %s:%d (hostname=%s)",
+            SERVICE_NAME,
+            local_ip,
+            SERVICE_PORT,
+            mdns_hostname or "<unavailable>",
+        )
+    else:
+        logger.info("Bonjour: advertisement disabled (RETRACE_ADVERTISE_BONJOUR=0)")
 
     yield
 
     # Shutdown
     if not fixtures_task.done():
         fixtures_task.cancel()
-    await azc.async_unregister_service(info)
-    await azc.async_close()
-    logger.info("Bonjour: service deregistered")
+    if azc is not None and info is not None:
+        await azc.async_unregister_service(info)
+        await azc.async_close()
+        logger.info("Bonjour: service deregistered")
 
 
 app = FastAPI(title="Retrace SOP API", version="0.1.0", lifespan=lifespan)
