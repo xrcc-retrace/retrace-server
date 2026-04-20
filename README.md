@@ -18,7 +18,7 @@ This server is the intelligence layer of a three-tier architecture (**glasses / 
 - `ffmpeg` (`brew install ffmpeg`) — clip extraction + duration probing
 - [Gemini API key](https://aistudio.google.com/apikey)
 
-## Setup & Run
+## Local Development
 
 ```bash
 python3 -m venv .venv
@@ -33,6 +33,99 @@ Server listens on `http://0.0.0.0:8000`.
 
 - SOP review dashboard: `http://localhost:8000/`
 - From an iOS device on the same Wi-Fi: Bonjour discovery finds the server automatically.
+
+### Environment variables
+
+| Name | Default | Purpose |
+|---|---|---|
+| `GEMINI_API_KEY` | — | Required. Google Gemini API key. |
+| `RETRACE_ADVERTISE_BONJOUR` | `1` | Set to `0` on cloud deploys (VPC doesn't support multicast; suppresses noisy startup). |
+| `RETRACE_LIVE_MODEL` | `gemini-3.1-flash-live-preview` | Override the Live model for a fast rollback. |
+
+## Production Deployment
+
+Retrace runs in production on AWS Lightsail at **https://retracexrcc.duckdns.org**. The iOS client falls back to this URL when Bonjour fails or when the user picks "Cloud" in Server Settings.
+
+### Stack
+
+| Layer | What |
+|---|---|
+| Host | Lightsail $12/mo — Ubuntu 22.04, 2 GB RAM, 2 vCPU, 60 GB SSD + 2 GB swap |
+| Region | `ap-southeast-1` (Singapore) — migrating to `eu-central-1` before the Berlin demo |
+| Public IP | Static IP `<server-ip>` (Lightsail) |
+| DNS | DuckDNS: `retracexrcc.duckdns.org` → static IP (free, manually refreshed on IP change) |
+| TLS + reverse proxy | [Caddy](https://caddyserver.com) with auto-provisioned Let's Encrypt certs |
+| App | `uvicorn main:app --host 127.0.0.1 --port 8000` under systemd unit `retrace.service` |
+| Secrets | `~/main-local-server-test/.env` (`chmod 600`) — `GEMINI_API_KEY` + `RETRACE_ADVERTISE_BONJOUR=0` |
+
+Caddy listens on `:80` and `:443`, proxying to the local uvicorn on `:8000`. `uvicorn` binds `127.0.0.1` only — port 8000 is never exposed to the internet. The Lightsail firewall opens only `22 / 80 / 443`.
+
+### CI/CD — auto-deploy on push to `main`
+
+GitHub Actions workflow at `.github/workflows/deploy.yml`:
+
+1. Triggered by `push: branches: [main]` or manual `workflow_dispatch`.
+2. SSH into Lightsail as `ubuntu` using the `DEPLOY_SSH_KEY` repo secret.
+3. `git pull --ff-only` in `~/main-local-server-test`.
+4. `pip install -r requirements.txt` (idempotent — only touches disk if deps changed).
+5. `sudo systemctl restart retrace` (passwordless sudo scoped to just this unit via `/etc/sudoers.d/retrace-deploy`).
+6. Fail the run if `GET /health` doesn't return 200.
+
+Required GitHub repo secrets:
+
+| Secret | Value |
+|---|---|
+| `DEPLOY_HOST` | The Lightsail static IP |
+| `DEPLOY_USER` | `ubuntu` |
+| `DEPLOY_SSH_KEY` | Full OpenSSH private key (including BEGIN/END banners) whose public half is in `~/.ssh/authorized_keys` on the box |
+
+### Manual operations
+
+```bash
+# SSH in (browser console from Lightsail, or local .pem key)
+ssh -i ~/.ssh/<deploy-key>.pem ubuntu@<server-ip>
+
+# Service status / logs
+sudo systemctl status retrace --no-pager
+journalctl -u retrace -n 100 --no-pager
+sudo systemctl status caddy --no-pager
+journalctl -u caddy -n 100 --no-pager
+
+# Force a redeploy without pushing new code
+gh workflow run "Deploy to Lightsail" --repo xrcc-retrace/main-local-server-test
+
+# Restart only (no git pull)
+sudo systemctl restart retrace
+
+# Tail the live Caddy request log
+sudo journalctl -u caddy -f
+
+# Check disk / memory / swap
+df -h /
+free -h
+```
+
+### Pausing billing
+
+Lightsail bills the bundle whether the instance is running or stopped — true "pause" = **snapshot-and-delete**.
+
+1. Lightsail console → instance → Snapshots → **Create snapshot** (~$0.05/GB/mo while paused; typical ~5 GB snapshot ≈ $0.25/mo).
+2. Delete the instance.
+3. Networking → Static IPs → **Detach and release** (attached IPs are free; detached ~$3.60/mo).
+
+To resume: create a new instance from the snapshot, allocate a new static IP, update DuckDNS to the new IP. Caddy re-provisions TLS on the first HTTPS request. ~5 min hands-on.
+
+### Region migration (planned before Berlin demo)
+
+Current Singapore deploy → Frankfurt for ~10 ms latency vs the XRCC Berlin hackathon venue:
+
+1. Lightsail console → Snapshots → **Copy snapshot to another region** → `eu-central-1`.
+2. Launch a new instance from the copied snapshot.
+3. Allocate a new static IP in Frankfurt, attach.
+4. Update DuckDNS A record to the new IP.
+5. Delete the Singapore instance and release its static IP.
+
+No code changes. The `cloudBaseURL` in the iOS `ServerEndpoint.swift` stays `https://retracexrcc.duckdns.org`; only the DNS target moves.
 
 ## Architecture Overview
 
