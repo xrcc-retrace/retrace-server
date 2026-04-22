@@ -1,20 +1,51 @@
 import logging
 
 from config import RETRACE_LIVE_MODEL
+from services import voice_commands as vc
 
 logger = logging.getLogger(__name__)
 
-# Gemini Live tool definitions — session_id omitted intentionally;
-# the phone injects it before forwarding to the server.
+
+# Gemini Live tool definitions — session_id omitted intentionally; the phone
+# injects it before forwarding to the server.
+#
+# The schema shape (name / parameters) stays in Python because Gemini's tool
+# declaration is a Python dict structure. But the `description` fields pull
+# their invocation-example phrasing from voice_commands.yaml, so a designer
+# can edit the YAML and the prompt rebuilds on the next server start. The
+# comma-separated utterance lists below are rendered by vc.format_utterance_examples().
+def _advance_step_description() -> str:
+    examples = vc.format_utterance_examples("next_step")
+    return (
+        "Call this the moment the learner finishes the current step — when they "
+        f"say {examples}, or when you visually confirm the completion criteria "
+        "are met. Call it on every step, including the very last one — always."
+    )
+
+
+def _get_reference_clip_description() -> str:
+    examples = vc.format_utterance_examples("show_reference_clip")
+    return (
+        "Show the expert's reference video clip for the current step on the "
+        "learner's phone screen. Call this when the learner wants to see how "
+        f"the expert did it (e.g., {examples})."
+    )
+
+
+def _go_to_step_description() -> str:
+    jump = vc.format_utterance_examples("jump_to_step")
+    repeat = vc.format_utterance_examples("repeat_step")
+    return (
+        "Jump to a specific step number. Use when the learner wants to go to a "
+        f"particular step ({jump}) or asks to re-read the current step — pass "
+        f"the CURRENT step's number to re-deliver it ({repeat})."
+    )
+
+
 TOOL_DEFINITIONS = [
     {
         "name": "advance_step",
-        "description": (
-            "Call this the moment the learner finishes the current step — when they "
-            "say 'done', 'next', 'finished', 'ok', 'I did it', or when you visually "
-            "confirm the completion criteria are met. Call it on every step, "
-            "including the very last one — always."
-        ),
+        "description": _advance_step_description(),
         "parameters": {
             "type": "object",
             "properties": {},
@@ -23,11 +54,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "get_reference_clip",
-        "description": (
-            "Show the expert's reference video clip for the current step on the "
-            "learner's phone screen. Call this when the learner wants to see how "
-            "the expert did it (e.g., 'show me', 'let me see', 'how does it look')."
-        ),
+        "description": _get_reference_clip_description(),
         "parameters": {
             "type": "object",
             "properties": {},
@@ -36,10 +63,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "go_to_step",
-        "description": (
-            "Jump to a specific step number. Use when the learner wants to go back "
-            "to a previous step or skip to a particular step."
-        ),
+        "description": _go_to_step_description(),
         "parameters": {
             "type": "object",
             "properties": {
@@ -162,23 +186,31 @@ Everything else (the learner's spoken questions, step completions, `advance_step
     return prompt
 
 
-_STEP_PROGRESSION_AUTO = """=== STEP PROGRESSION ===
-Call advance_step to move to the next step. Trigger it on either signal: the learner says they're done ("done", "next", "finished", "I did it"), OR you visually confirm the completion criteria are met. Either is enough — you do not need both. Call advance_step every time, including on the final step.
+def _step_progression_auto() -> str:
+    next_examples = vc.format_utterance_examples("next_step")
+    return f"""=== STEP PROGRESSION ===
+Call advance_step to move to the next step. Trigger it on either signal: the learner says they're done ({next_examples}), OR you visually confirm the completion criteria are met. Either is enough — you do not need both. Call advance_step every time, including on the final step.
 
 You only know the current step. When advance_step returns, the response gives you the next step's instructions (status="advanced") or a procedure-complete message (status="completed"). Speak from that response. Until then, you have no information about future steps — never describe or hint at them.
 
 Use get_reference_clip when the learner asks to see the expert's video.
-Use go_to_step when the learner asks to jump to a specific step number."""
+Use go_to_step when the learner asks to jump to a specific step number, or to re-read the current step (pass the current step number)."""
 
 
-_STEP_PROGRESSION_MANUAL = """=== STEP PROGRESSION ===
-Call advance_step when the learner says they're done ("done", "next", "finished", "I did it"). Call it every time, including on the final step.
+def _step_progression_manual() -> str:
+    next_examples = vc.format_utterance_examples("next_step")
+    return f"""=== STEP PROGRESSION ===
+Call advance_step when the learner says they're done ({next_examples}). Call it every time, including on the final step.
 
 
 You only know the current step. When advance_step returns, the response gives you the next step's instructions (status="advanced") or a procedure-complete message (status="completed"). Speak from that response. Until then, you have no information about future steps — never describe or hint at them.
 
 Use get_reference_clip when the learner asks to see the expert's video.
-Use go_to_step when the learner asks to jump to a specific step number."""
+Use go_to_step when the learner asks to jump to a specific step number, or to re-read the current step (pass the current step number)."""
+
+
+_STEP_PROGRESSION_AUTO = _step_progression_auto()
+_STEP_PROGRESSION_MANUAL = _step_progression_manual()
 
 
 # TRANSITIONAL: _ERROR_CRITERIA_OVERRIDES is the legacy fallback from before

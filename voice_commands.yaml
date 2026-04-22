@@ -1,0 +1,910 @@
+# =============================================================================
+# voice_commands.yaml — Retrace Voice Command Ontology
+# =============================================================================
+#
+# THIS FILE IS THE SINGLE SOURCE OF TRUTH for every voice command in Retrace.
+# A designer owns this file; code reads it.
+#
+# Consumed by:
+#   - services/voice_commands.py           (loader — imported at server startup)
+#   - services/prompt_builder.py           (learner prompt + tool declarations)
+#   - services/troubleshoot/prompt.py      (troubleshoot prompt + tool declarations)
+#   - iOS app (via a bundled copy; see scripts/sync_voice_commands.sh — TBD)
+#
+# -----------------------------------------------------------------------------
+# HOW TO EDIT THIS FILE (designer workflow)
+# -----------------------------------------------------------------------------
+# 1. Add or change entries below.
+# 2. Run `python validate_voice_commands.py` to check schema + prompt budget.
+# 3. Restart the server — prompts rebuild at import time, no code change needed.
+# 4. (When iOS wiring lands) run scripts/sync_voice_commands.sh, rebuild iOS.
+#
+# Adding a *new* command sometimes requires code work (a new server handler or
+# a new iOS UI route). The validator prints a summary of commands whose
+# `target` field references something that doesn't exist yet — use that list
+# as a TODO for engineering. Utterance tweaks to *existing* commands are pure
+# YAML edits and need no code.
+#
+# -----------------------------------------------------------------------------
+# FIELD REFERENCE
+# -----------------------------------------------------------------------------
+# id
+#   snake_case stable identifier. NEVER change once deployed — code and logs
+#   reference this string.
+#
+# display_name
+#   Human-readable label shown in the HUD help panel.
+#
+# mode
+#   Which session this command is available in:
+#     learner       → coaching session
+#     troubleshoot  → diagnostic session
+#     global        → both modes
+#
+# family
+#   Command group for help-panel organization and prompt structuring:
+#     navigation | reference_clip | session | hud_controls |
+#     completion | troubleshoot | global
+#
+# intent
+#   One sentence: what the user is trying to do. Design-doc field; not used
+#   by code except for surfacing in debug logs.
+#
+# utterances
+#   All the phrasings a user might actually say (8–15 entries). This is the
+#   designer's coverage list — used to populate the help panel and to drive
+#   manual QA. NOT all of these are shipped to Gemini; see prompt_utterances.
+#
+# prompt_utterances
+#   The short list (3–5) actually baked into the Gemini system prompt as
+#   invocation examples. Prompt-budget guard: the ephemeral token gets
+#   re-minted every ~25 min (context compression) or on every token refresh,
+#   so the prompt text cost is real. Keep this tight.
+#
+# handler_type
+#   Who handles this command:
+#     server_tool  → Gemini fires a tool call; iOS forwards to /tool-call;
+#                    server mutates session state and returns a result.
+#     client_tool  → Gemini fires a tool call; iOS handles locally with no
+#                    server round-trip. Used for pure UI state (toggle PiP,
+#                    switch insight tab, etc).
+#     hybrid       → Client runs a confirmation UI first (e.g. the hold-to-
+#                    exit countdown); server call fires only on confirmation.
+#
+# target
+#   The exact function, method, tool, or endpoint to invoke.
+#     For server_tool: the Gemini tool name (matches TOOL_DEFINITIONS).
+#     For client_tool: the iOS ViewModel method or state mutation.
+#     For hybrid:      both, separated by " / ".
+#   Strings starting with "NEW:" mark targets that don't yet exist in code.
+#
+# confirmation
+#   What confirmation is required before executing:
+#     none              → fires immediately on Gemini's tool call
+#     soft              → Gemini should ask "did you mean X?" first
+#     destructive_hold  → triggers the hold-to-confirm countdown UI
+#
+# disambiguation
+#   When Gemini should NOT fire this command. Prevents false positives from
+#   homonym utterances (e.g. "stop" mid-instruction ≠ exit_session).
+#
+# notes
+#   UX subtleties, platform differences, implementation gaps. Free-text.
+# =============================================================================
+
+schema_version: "1.0"
+
+commands:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # NAVIGATION — step movement within a procedure
+  # ──────────────────────────────────────────────────────────────────────────
+
+  - id: next_step
+    display_name: "Next Step"
+    mode: learner
+    family: navigation
+    intent: "Advance to the next step, treating the current step as complete."
+    utterances:
+      - "Next"
+      - "Done"
+      - "I'm done"
+      - "I did it"
+      - "Finished"
+      - "That's done"
+      - "Move on"
+      - "Go to the next step"
+      - "Step complete"
+      - "OK, next"
+      - "Mark as done"
+      - "Completed"
+      - "Let's keep going"
+      - "Alright, what's next"
+      - "I finished this one"
+    prompt_utterances:
+      - "done"
+      - "next"
+      - "I'm done"
+      - "move on"
+      - "finished"
+    handler_type: server_tool
+    target: "advance_step"
+    confirmation: none
+    disambiguation: >
+      Do NOT fire if Gemini is mid-way through reading back a warning or caution.
+      Do NOT fire if the completion card is already showing (confirm_complete
+      handles that state).
+    notes: >
+      Visual auto-advance (auto_advance=True) bypasses this command — Gemini
+      calls advance_step when it sees completion_criteria met visually. This
+      is the verbal path that fires when auto_advance=False.
+
+  - id: previous_step
+    display_name: "Previous Step"
+    mode: learner
+    family: navigation
+    intent: "Navigate back to the prior step."
+    utterances:
+      - "Go back"
+      - "Previous step"
+      - "Back one"
+      - "Take me back"
+      - "I need to redo that"
+      - "Wait, go back"
+      - "Last step"
+      - "Rewind"
+      - "Step back"
+      - "Show me the previous one"
+      - "I wasn't ready"
+      - "Let me go back"
+    prompt_utterances:
+      - "go back"
+      - "previous step"
+      - "back one"
+      - "I need to redo that"
+      - "last step"
+    handler_type: server_tool
+    target: "NEW:previous_step"
+    confirmation: none
+    disambiguation: >
+      Do NOT fire if user is on step 1 — Gemini should respond verbally that
+      there is no prior step.
+    notes: >
+      New server tool needed. Cleanest implementation: add previous_step as a
+      dedicated no-arg tool; server resolves current_step - 1. Avoids asking
+      Gemini to track step numbers — server is the authority.
+
+  - id: jump_to_step
+    display_name: "Jump to Step N"
+    mode: learner
+    family: navigation
+    intent: "Navigate directly to a specific step number."
+    utterances:
+      - "Jump to step 3"
+      - "Go to step 3"
+      - "Skip to step 5"
+      - "Take me to step 2"
+      - "Step 4"
+      - "Go back to step 1"
+      - "Start from step 3"
+      - "I want to go to step 6"
+      - "Can you take me to step 4"
+      - "Move to step 2"
+    prompt_utterances:
+      - "jump to step N"
+      - "go to step N"
+      - "skip to step N"
+      - "take me to step N"
+      - "step N"
+    handler_type: server_tool
+    target: "go_to_step"
+    confirmation: soft
+    disambiguation: >
+      Only fires when a cardinal number follows the navigation verb. "Go to
+      step" without a number → Gemini should ask which step.
+    notes: >
+      Existing tool already handles this. No new server work needed.
+      Soft confirmation when jumping more than 2 steps away.
+
+  - id: repeat_step
+    display_name: "Repeat Current Step"
+    mode: learner
+    family: navigation
+    intent: "Re-read the current step instructions from the beginning."
+    utterances:
+      - "Repeat"
+      - "Say that again"
+      - "Can you repeat that"
+      - "What was that step again"
+      - "I didn't catch that"
+      - "Tell me again"
+      - "Read it again"
+      - "Repeat the step"
+      - "One more time"
+      - "What do I do here"
+      - "I'm confused, start over"
+      - "Go over this step again"
+    prompt_utterances:
+      - "repeat"
+      - "say that again"
+      - "I didn't catch that"
+      - "tell me again"
+      - "read it again"
+    handler_type: server_tool
+    target: "go_to_step"
+    confirmation: none
+    disambiguation: >
+      "One more time" should NOT fire during active reference clip playback —
+      while the clip is visible, "again" maps to play_reference_again instead.
+    notes: >
+      Reuses go_to_step by passing the current step index. Server re-sends the
+      current step's tool response, causing Gemini to re-read instructions.
+      No new server tool needed.
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # REFERENCE CLIP — expert video overlay controls
+  # ──────────────────────────────────────────────────────────────────────────
+
+  - id: show_reference_clip
+    display_name: "Show Reference Clip"
+    mode: learner
+    family: reference_clip
+    intent: "Display the reference video clip for the current step."
+    utterances:
+      - "Show me"
+      - "Let me see"
+      - "Show the video"
+      - "Play the clip"
+      - "How does it look"
+      - "Show me an example"
+      - "Can I see how it's done"
+      - "Demo"
+      - "Show reference"
+      - "Play reference clip"
+      - "What should this look like"
+      - "I need to see it"
+    prompt_utterances:
+      - "show me"
+      - "play the clip"
+      - "show the video"
+      - "how does it look"
+      - "show me an example"
+    handler_type: server_tool
+    target: "get_reference_clip"
+    confirmation: none
+    disambiguation: >
+      Do NOT fire if clip_status is "none" (manual-ingested procedures have no
+      clips). Respond verbally: no clip is available for this procedure.
+    notes: "Already implemented."
+
+  - id: hide_reference_clip
+    display_name: "Hide Reference Clip"
+    mode: learner
+    family: reference_clip
+    intent: "Dismiss the currently visible reference clip overlay."
+    utterances:
+      - "Hide the video"
+      - "Close the clip"
+      - "Dismiss"
+      - "Hide that"
+      - "I'm good, close it"
+      - "OK, got it, close"
+      - "Remove the video"
+      - "Clear the screen"
+      - "Hide reference"
+      - "Close video"
+    prompt_utterances:
+      - "hide the video"
+      - "close the clip"
+      - "dismiss"
+      - "hide that"
+      - "I'm good close it"
+    handler_type: client_tool
+    target: "NEW:CoachingSessionViewModel.showPiP = false"
+    confirmation: none
+    disambiguation: >
+      Only fires when the reference clip is currently visible. No-op otherwise.
+    notes: >
+      Pure client state. Server has no representation of PiP visibility.
+
+  - id: play_reference_again
+    display_name: "Play Reference Again"
+    mode: learner
+    family: reference_clip
+    intent: "Replay the reference clip from the start without leaving the current step."
+    utterances:
+      - "Play it again"
+      - "Again"
+      - "Replay"
+      - "Replay that"
+      - "Show me again"
+      - "One more time"
+      - "Rewind the clip"
+      - "Watch again"
+      - "Play the video again"
+      - "Run it again"
+      - "Let me see that again"
+    prompt_utterances:
+      - "play it again"
+      - "again"
+      - "replay"
+      - "show me again"
+      - "one more time"
+    handler_type: server_tool
+    target: "get_reference_clip"
+    confirmation: none
+    disambiguation: >
+      "Again" while clip is visible → play_reference_again.
+      "Again" with no clip visible → repeat_step.
+    notes: >
+      iOS should interpret a repeated get_reference_clip response as a player
+      restart, not a fresh fetch. Same clip URL is returned.
+
+  - id: expand_reference_clip
+    display_name: "Expand Reference Clip"
+    mode: learner
+    family: reference_clip
+    intent: "Expand the reference clip from picture-in-picture to full-size."
+    utterances:
+      - "Make it bigger"
+      - "Expand the video"
+      - "Full screen"
+      - "Zoom in"
+      - "Bigger"
+      - "Expand"
+      - "I can't see it"
+      - "Full size"
+      - "Blow it up"
+      - "Make the video larger"
+    prompt_utterances:
+      - "make it bigger"
+      - "expand the video"
+      - "full screen"
+      - "bigger"
+      - "zoom in"
+    handler_type: client_tool
+    target: "NEW:PiPReferenceView.isExpanded = true"
+    confirmation: none
+    disambiguation: >
+      Only fires when the reference clip is currently visible.
+    notes: >
+      On Ray-Ban HUD, "full screen" means filling the HUD panel, not the phone
+      screen. iPhone transport maps to a different expand behavior.
+
+  - id: collapse_reference_clip
+    display_name: "Collapse Reference Clip"
+    mode: learner
+    family: reference_clip
+    intent: "Return an expanded reference clip to picture-in-picture size."
+    utterances:
+      - "Make it smaller"
+      - "Shrink the video"
+      - "Back to PiP"
+      - "Collapse"
+      - "Minimize"
+      - "Smaller"
+      - "Put it back"
+      - "Make the video small again"
+    prompt_utterances:
+      - "make it smaller"
+      - "collapse"
+      - "minimize"
+      - "shrink the video"
+      - "put it back"
+    handler_type: client_tool
+    target: "NEW:PiPReferenceView.isExpanded = false"
+    confirmation: none
+    disambiguation: >
+      Only fires when the clip is in expanded state.
+    notes: "Pair with expand_reference_clip as a toggle."
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # SESSION LIFECYCLE — exit, mute, pause
+  # ──────────────────────────────────────────────────────────────────────────
+
+  - id: exit_session
+    display_name: "Exit Workflow"
+    mode: learner
+    family: session
+    intent: "End the coaching session and return to the workflow list."
+    utterances:
+      - "Exit"
+      - "Exit workflow"
+      - "Stop"
+      - "End session"
+      - "I want to stop"
+      - "Get me out of here"
+      - "Quit"
+      - "Let's stop"
+      - "I'm done with this"
+      - "End coaching"
+      - "Cancel session"
+      - "Abort"
+      - "I want to exit the workflow"
+      - "Take me back to the menu"
+      - "Stop coaching"
+    prompt_utterances:
+      - "exit"
+      - "end session"
+      - "I want to stop"
+      - "get me out of here"
+      - "stop coaching"
+    handler_type: hybrid
+    target: "NEW:CoachingRayBanHUD.beginExitHold() / DELETE /api/learner/session/{id}"
+    confirmation: destructive_hold
+    disambiguation: >
+      Do NOT fire on "stop" if the user is trying to pause or mute. "Stop, can
+      you repeat that" should NOT trigger exit. Gemini should confirm intent
+      before initiating the hold countdown.
+    notes: >
+      Voice exit MUST go through the same hold-to-exit countdown as the
+      physical button. The voice command initiates the confirmation state —
+      Gemini says "hold to confirm exit, or say cancel" — and the server
+      DELETE fires only on confirmed hold, not on the voice command itself.
+
+  - id: mute
+    display_name: "Mute Mic"
+    mode: global
+    family: session
+    intent: "Mute the user's microphone input."
+    utterances:
+      - "Mute"
+      - "Mute me"
+      - "Stop listening"
+      - "Quiet mode"
+      - "Shh"
+      - "I need a moment"
+      - "Turn off my mic"
+      - "Mute the mic"
+      - "Don't listen"
+    prompt_utterances:
+      - "mute"
+      - "mute me"
+      - "stop listening"
+      - "turn off my mic"
+      - "I need a moment"
+    handler_type: client_tool
+    target: "NEW:GeminiLiveSessionBase.toggleMute()"
+    confirmation: none
+    disambiguation: ""
+    notes: >
+      Gemini hearing "mute" via voice is paradoxical — fires immediately on
+      recognition. Best-effort. Tap/button path is more reliable for privacy-
+      critical muting. The HUD must show a visual mute indicator with tap-to-
+      unmute affordance: once muted, voice unmute is unreachable.
+
+  - id: unmute
+    display_name: "Unmute Mic"
+    mode: global
+    family: session
+    intent: "Re-enable microphone input after muting."
+    utterances:
+      - "Unmute"
+      - "Turn the mic back on"
+      - "I'm back"
+      - "Start listening again"
+      - "Resume mic"
+    prompt_utterances:
+      - "unmute"
+      - "turn the mic back on"
+      - "I'm back"
+    handler_type: client_tool
+    target: "NEW:GeminiLiveSessionBase.toggleMute()"
+    confirmation: none
+    disambiguation: ""
+    notes: >
+      Gemini cannot hear this when muted. Exists for tap-wake flows on iPhone
+      where the user briefly unmutes by tapping, speaks, then is re-muted.
+      Informational in YAML; practically unreachable via voice after mute.
+
+  - id: pause_session
+    display_name: "Pause Session"
+    mode: learner
+    family: session
+    intent: "Pause the coaching session to take a break without losing progress."
+    utterances:
+      - "Pause"
+      - "Hold on"
+      - "Wait"
+      - "Give me a second"
+      - "I need to stop for a bit"
+      - "Pause coaching"
+      - "Take a break"
+      - "One sec"
+      - "Wait a moment"
+      - "Let me catch up"
+    prompt_utterances:
+      - "pause"
+      - "hold on"
+      - "give me a second"
+      - "pause coaching"
+      - "one sec"
+    handler_type: server_tool
+    target: "NEW:pause_session"
+    confirmation: soft
+    disambiguation: >
+      "Wait" used mid-Gemini-reply ("wait, say that again") should NOT trigger
+      pause — that's repeat_step. "Wait" standalone or followed by silence →
+      pause_session.
+    notes: >
+      No pause state exists server-side today. MVP fallback: map to mute
+      client-side until the server pause status is built (status: "paused" on
+      the session dict + a pause_session handler in services/session.py).
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # HUD CONTROLS — visual panel toggles
+  # ──────────────────────────────────────────────────────────────────────────
+
+  - id: expand_step_detail
+    display_name: "Show Step Detail"
+    mode: learner
+    family: hud_controls
+    intent: "Expand the step detail panel on the HUD to show full step text."
+    utterances:
+      - "Show step detail"
+      - "Expand"
+      - "More detail"
+      - "Show more"
+      - "What's the full step"
+      - "I can't read it"
+      - "Show the whole step"
+      - "Expand step"
+      - "Full text"
+      - "More info"
+    prompt_utterances:
+      - "show step detail"
+      - "expand"
+      - "more detail"
+      - "show more"
+      - "full text"
+    handler_type: client_tool
+    target: "NEW:CoachingRayBanHUD.isStepDetailExpanded = true"
+    confirmation: none
+    disambiguation: >
+      "More" in conversational context ("tell me more about why") should NOT
+      fire UI expansion. Only fire when "more" or "expand" refer to the
+      visible step card.
+    notes: >
+      Ray-Ban HUD-specific control. On iPhone, the full step detail is likely
+      already visible — iOS should no-op or map to scroll-to-top.
+
+  - id: collapse_step_detail
+    display_name: "Hide Step Detail"
+    mode: learner
+    family: hud_controls
+    intent: "Collapse the step detail panel back to summary view."
+    utterances:
+      - "Collapse"
+      - "Hide detail"
+      - "Less detail"
+      - "Show less"
+      - "Compact view"
+      - "Minimize"
+      - "Minimize the step"
+    prompt_utterances:
+      - "collapse"
+      - "hide detail"
+      - "less detail"
+      - "show less"
+      - "minimize"
+    handler_type: client_tool
+    target: "NEW:CoachingRayBanHUD.isStepDetailExpanded = false"
+    confirmation: none
+    disambiguation: ""
+    notes: "Pair with expand_step_detail as a toggle."
+
+  - id: show_tips
+    display_name: "Show Tips"
+    mode: learner
+    family: hud_controls
+    intent: "Cycle the insight panel to the Tips tab."
+    utterances:
+      - "Show tips"
+      - "Any tips"
+      - "Tips"
+      - "Give me a tip"
+      - "Advice"
+      - "Hints"
+      - "What are the tips here"
+      - "Is there anything I should know"
+    prompt_utterances:
+      - "show tips"
+      - "any tips"
+      - "tips"
+      - "give me a tip"
+      - "hints"
+    handler_type: client_tool
+    target: "NEW:CoachingRayBanHUDComponents.selectedInsightCategory = .tips"
+    confirmation: none
+    disambiguation: ""
+    notes: >
+      If the procedure has no tips for this step, Gemini should respond
+      verbally rather than switching to an empty panel.
+
+  - id: show_warnings
+    display_name: "Show Warnings"
+    mode: learner
+    family: hud_controls
+    intent: "Cycle the insight panel to the Warnings tab."
+    utterances:
+      - "Show warnings"
+      - "Any warnings"
+      - "Warnings"
+      - "What should I watch out for"
+      - "Cautions"
+      - "Is this dangerous"
+      - "Any dangers"
+      - "Safety notes"
+    prompt_utterances:
+      - "show warnings"
+      - "any warnings"
+      - "warnings"
+      - "cautions"
+      - "safety notes"
+    handler_type: client_tool
+    target: "NEW:CoachingRayBanHUDComponents.selectedInsightCategory = .warnings"
+    confirmation: none
+    disambiguation: ""
+    notes: >
+      If warnings exist, Gemini should also read them aloud. If none, respond
+      verbally.
+
+  - id: show_flags
+    display_name: "Show Red Flags"
+    mode: learner
+    family: hud_controls
+    intent: "Cycle the insight panel to the Red Flags tab."
+    utterances:
+      - "Red flags"
+      - "Show red flags"
+      - "What are the red flags"
+      - "Critical issues"
+      - "Stop conditions"
+      - "When should I stop"
+      - "Show critical notes"
+    prompt_utterances:
+      - "red flags"
+      - "show red flags"
+      - "critical issues"
+      - "stop conditions"
+      - "when should I stop"
+    handler_type: client_tool
+    target: "NEW:CoachingRayBanHUDComponents.selectedInsightCategory = .redFlags"
+    confirmation: none
+    disambiguation: ""
+    notes: >
+      Highest-severity tab. When switched via voice, Gemini should read red
+      flags aloud unconditionally.
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # COMPLETION — post-procedure and mid-session pivots
+  # ──────────────────────────────────────────────────────────────────────────
+
+  - id: confirm_complete
+    display_name: "Mark Step Complete"
+    mode: learner
+    family: completion
+    intent: "Confirm the completion card, acknowledging the step is done."
+    utterances:
+      - "OK"
+      - "Confirmed"
+      - "Yes"
+      - "Yep"
+      - "Got it"
+      - "Sure"
+      - "Acknowledge"
+      - "Accept"
+      - "Looks good"
+      - "That's right"
+    prompt_utterances:
+      - "OK"
+      - "confirmed"
+      - "yes"
+      - "got it"
+      - "looks good"
+    handler_type: server_tool
+    target: "advance_step"
+    confirmation: none
+    disambiguation: >
+      Only active when the completion card is displayed. "OK" during normal
+      coaching should NOT trigger step advancement — that is next_step's
+      responsibility.
+    notes: >
+      The completion card confirms a visual detection event. The step has
+      already been marked complete by advance_step; the card is informational.
+      This command is the verbal acknowledgment of the card, not the trigger.
+
+  - id: go_to_saved_workflows
+    display_name: "Go to Saved Workflows"
+    mode: learner
+    family: completion
+    intent: "After completing a procedure, navigate to the Library screen."
+    utterances:
+      - "Show my workflows"
+      - "Library"
+      - "My saved procedures"
+      - "Go to library"
+      - "Saved workflows"
+      - "Take me to library"
+      - "What else can I do"
+    prompt_utterances:
+      - "show my workflows"
+      - "library"
+      - "saved workflows"
+      - "go to library"
+    handler_type: client_tool
+    target: "NEW:LibraryView navigation"
+    confirmation: soft
+    disambiguation: >
+      Only surface when the session completion card is visible. Not available
+      mid-session.
+    notes: "Completion flow only. Implies session end — confirm before teardown."
+
+  - id: go_to_troubleshoot
+    display_name: "Switch to Troubleshoot"
+    mode: learner
+    family: completion
+    intent: "Switch to troubleshoot mode to diagnose an issue encountered during coaching."
+    utterances:
+      - "Something's wrong"
+      - "I have a problem"
+      - "Troubleshoot"
+      - "It's not working"
+      - "Help me diagnose this"
+      - "I'm stuck"
+      - "Switch to troubleshoot"
+      - "Diagnose the issue"
+    prompt_utterances:
+      - "something's wrong"
+      - "troubleshoot"
+      - "I have a problem"
+      - "it's not working"
+      - "I'm stuck"
+    handler_type: client_tool
+    target: "NEW:DiagnosticSessionViewModel initialization"
+    confirmation: soft
+    disambiguation: ""
+    notes: >
+      Exits the learner session and starts a troubleshoot session. Gemini
+      should confirm: "switching to troubleshoot mode, is that right?" Learner
+      session should be cleaned up (DELETE) before troubleshoot session starts.
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # TROUBLESHOOT — diagnostic session controls
+  # ──────────────────────────────────────────────────────────────────────────
+
+  - id: retry_diagnosis
+    display_name: "Retry Diagnosis"
+    mode: troubleshoot
+    family: troubleshoot
+    intent: "Restart the diagnostic flow from the beginning after an unsuccessful identification."
+    utterances:
+      - "Try again"
+      - "Retry"
+      - "That's not right"
+      - "Wrong product"
+      - "Start over"
+      - "Let me describe it again"
+      - "That's not the right one"
+      - "That's wrong"
+      - "None of those match"
+      - "That wasn't it"
+    prompt_utterances:
+      - "try again"
+      - "retry"
+      - "that's not right"
+      - "wrong product"
+      - "start over"
+    handler_type: client_tool
+    target: "NEW:DiagnosticResolutionPanel.onRetry()"
+    confirmation: none
+    disambiguation: >
+      "Start over" in troubleshoot mode → retry_diagnosis. "Start over" in
+      learner mode → repeat_step. Mode-scoped.
+    notes: >
+      onRetry() injects a synthetic user turn back into the Live session. No
+      server state is mutated. Gemini re-enters the identify phase.
+
+  - id: start_matched_procedure
+    display_name: "Start Matched Procedure"
+    mode: troubleshoot
+    family: troubleshoot
+    intent: "Start coaching on the procedure Gemini identified as the best match."
+    utterances:
+      - "Start that procedure"
+      - "Let's do it"
+      - "Begin coaching"
+      - "Start the fix"
+      - "Yes, use that one"
+      - "That's the one"
+      - "Go ahead"
+      - "Let's start"
+      - "OK, start"
+      - "Launch the procedure"
+      - "Begin"
+      - "Start coaching me"
+    prompt_utterances:
+      - "start that procedure"
+      - "let's do it"
+      - "begin coaching"
+      - "yes use that one"
+      - "go ahead"
+    handler_type: hybrid
+    target: "handoff_to_learner / POST /api/troubleshoot/session/{id}/handoff"
+    confirmation: soft
+    disambiguation: >
+      "Yes" and "OK" only map here when phase == "ready_to_coach" and Gemini
+      has presented a matched procedure. Context-gate on session phase.
+    notes: >
+      Gemini should confirm the procedure name before firing: "starting
+      [procedure name], is that correct?"
+
+  - id: upload_manual
+    display_name: "Upload a Manual"
+    mode: troubleshoot
+    family: troubleshoot
+    intent: "Upload a PDF manual when no matching procedure is found in the library."
+    utterances:
+      - "Upload a manual"
+      - "I have a manual"
+      - "There's a PDF"
+      - "Upload the manual"
+      - "I have the instructions"
+      - "Let me upload a PDF"
+      - "I have a guide"
+      - "Add a manual"
+      - "Use my manual"
+      - "I have documentation"
+    prompt_utterances:
+      - "upload a manual"
+      - "I have a manual"
+      - "there's a PDF"
+      - "I have the instructions"
+      - "add a manual"
+    handler_type: client_tool
+    target: "NEW:iOS document picker → POST /api/troubleshoot/manuals/upload"
+    confirmation: none
+    disambiguation: ""
+    notes: >
+      Gemini typically surfaces this when search_procedures returns no
+      confident match. Voice command triggers the iOS document picker (out of
+      band from the Gemini session). Gemini should narrate "I'm opening the
+      upload panel" and wait.
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # GLOBAL — available in both modes
+  # ──────────────────────────────────────────────────────────────────────────
+
+  - id: help
+    display_name: "What Can I Say"
+    mode: global
+    family: global
+    intent: "Surface the list of available voice commands in the current mode."
+    utterances:
+      - "Help"
+      - "What can I say"
+      - "What are my options"
+      - "Voice commands"
+      - "What do I say"
+      - "Commands"
+      - "What can you do"
+      - "How do I use this"
+      - "I'm confused"
+      - "Show me what I can say"
+      - "What should I say"
+      - "Guide me"
+    prompt_utterances:
+      - "help"
+      - "what can I say"
+      - "what are my options"
+      - "voice commands"
+      - "what can you do"
+    handler_type: client_tool
+    target: "NEW:VoiceCommandHelpPanel"
+    confirmation: none
+    disambiguation: ""
+    notes: >
+      Help panel renders display_name + first 2 utterances per command, grouped
+      by family. Gemini also reads a short summary aloud. Primary discoverability
+      mechanism — commands are not labeled on the HUD, so this is the user's
+      only self-serve reference.

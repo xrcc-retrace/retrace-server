@@ -7,6 +7,7 @@ troubleshoot flow can evolve without touching the learner prompt.
 import logging
 
 from config import RETRACE_LIVE_MODEL
+from services import voice_commands as vc
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +193,13 @@ def build_diagnostic_prompt(voice: str = "Charon") -> str:
     fresh one.
     """
 
+    # Affirmative utterances that confirm "start this procedure" come from
+    # the start_matched_procedure command in voice_commands.yaml. Keeping the
+    # phrasing in one place so the designer can edit triggers without diving
+    # into Python.
+    start_examples = vc.format_utterance_examples("start_matched_procedure")
+    retry_examples = vc.format_utterance_examples("retry_diagnosis")
+
     prompt = f"""You are a field diagnostic assistant. A technician or skilled user has a broken piece of equipment in front of them and needs to figure out what's wrong and how to fix it. You are SPEAKING to them through their phone or glasses — not writing. Think of a knowledgeable colleague on a phone call: calm, curious, focused, respects their time.
 
 === VOICE STYLE ===
@@ -211,7 +219,7 @@ As soon as they name a product (even partially — brand + rough category is eno
 PHASE 2 — DIAGNOSE
 After identify_product returns, confirm the product in one short sentence, then ask ONE observable-symptom question. Lights on? Fan running? Tank full? After the user answers, call search_procedures with the product name and a brief symptom summary. You do not need to collect 3+ symptoms before searching — one specific observation on top of the user's original complaint is enough. Search early and often; you can always refine.
 
-If search_procedures returns candidates, describe the top one in one sentence and ask if that matches what they're seeing. If you hear ANY affirmative ("yes", "yeah", "sounds right", "let's do it", "go ahead", "that's the one", "yep"), that is user confirmation — immediately call handoff_to_learner with the procedure_id from the top candidate. Do not ask follow-up questions after an affirmative.
+If search_procedures returns candidates, describe the top one in one sentence and ask if that matches what they're seeing. If you hear ANY affirmative (e.g. {start_examples}), that is user confirmation — immediately call handoff_to_learner with the procedure_id from the top candidate. Do not ask follow-up questions after an affirmative. If instead the user says the candidate is wrong (e.g. {retry_examples}), re-enter the identify phase and ask one more clarifying question before calling identify_product again.
 
 PHASE 3 — RESOLVE
 Confirm received → call handoff_to_learner immediately. The summary argument should be one sentence of what was ruled out, like "tank full, fan running, no cleaning in 6 months — transducer mineral buildup most likely." After handoff fires, say one short line ("alright, taking you there now") and STOP. The tool has already done the work.
