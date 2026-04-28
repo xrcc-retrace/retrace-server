@@ -22,18 +22,65 @@ jobs:
           script: |
             set -euo pipefail
             cd ~/main-local-server-test
+
+            echo "::group::stop service for clean snapshot"
+            sudo systemctl stop retrace || true
+            echo "::endgroup::"
+
+            # The running server writes runtime data into data/ and uploads/, but
+            # several of those subtrees were tracked in git at one point or another
+            # (clips, icons, manual_images, manuals, uploads, and historically
+            # retrace.db). When the working-tree version of any tracked path
+            # differs from the index, `git pull` aborts with "local changes would
+            # be overwritten by merge"; same shape for an untracked file at a path
+            # the incoming commit wants to add.
+            #
+            # Strategy: snapshot data/ and uploads/, scrub the working tree so git
+            # can fast-forward unambiguously, pull, then overlay the snapshot back
+            # so runtime data wins on any overlap.
+            echo "::group::snapshot runtime data"
+            RUNTIME_BACKUP=$(mktemp -d)
+            for p in data uploads; do
+              if [ -d "$p" ]; then
+                mkdir -p "$RUNTIME_BACKUP/$p"
+                cp -a "$p/." "$RUNTIME_BACKUP/$p/"
+              fi
+            done
+            echo "snapshot at $RUNTIME_BACKUP ($(du -sh "$RUNTIME_BACKUP" | cut -f1))"
+            echo "::endgroup::"
+
+            echo "::group::scrub working tree under data/ and uploads/"
+            # Reset tracked-but-modified files, then drop untracked files in those
+            # subtrees. Both are recoverable from the snapshot above.
+            git checkout -- data uploads 2>/dev/null || true
+            git clean -fd data uploads
+            echo "::endgroup::"
+
             echo "::group::git pull"
             git pull --ff-only
             echo "::endgroup::"
+
+            echo "::group::restore runtime data"
+            for p in data uploads; do
+              if [ -d "$RUNTIME_BACKUP/$p" ]; then
+                mkdir -p "$p"
+                cp -a "$RUNTIME_BACKUP/$p/." "$p/"
+              fi
+            done
+            rm -rf "$RUNTIME_BACKUP"
+            echo "::endgroup::"
+
             echo "::group::pip install"
             source .venv/bin/activate
             pip install -r requirements.txt
             echo "::endgroup::"
-            echo "::group::restart service"
+
+            echo "::group::start service"
             sudo systemctl restart retrace
             sleep 3
             sudo systemctl status retrace --no-pager | head -20
             echo "::endgroup::"
+
             echo "::group::health check"
             curl -sfS http://localhost:8000/health
             echo ""

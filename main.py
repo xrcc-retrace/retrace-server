@@ -157,7 +157,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": "2026-04-28-deploy-test"}
 
 
 @app.get("/api/uploads/{filename}")
