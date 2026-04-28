@@ -3,3 +3,10 @@
 __pycache__/
 *.pyc
 gemini_live_playground/logs/
+
+# Runtime-mutated SQLite database — production server writes to this,
+# tracking it would break `git pull` on every deploy.
+data/retrace.db
+data/retrace.db-journal
+data/retrace.db-wal
+data/retrace.db-shm
