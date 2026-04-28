@@ -53,7 +53,26 @@ For each step:
 The expert may narrate what they're doing — use both visual and audio cues to build the procedure.
 Be precise with timestamps. Each step should be a discrete, actionable unit.
 Steps should not overlap in time. Cover the entire video duration.
-Keep step titles short and action-oriented (e.g., "Remove the drip tray", "Insert cleaning tablet")."""
+Keep step titles short and action-oriented (e.g., "Remove the drip tray", "Insert cleaning tablet").
+
+In addition to the steps, also produce two top-level iconography fields representing the MAIN PHYSICAL OBJECT this procedure works on (the appliance / device, not the action).
+
+- `icon_symbol`: a single Iconify icon ID in the form "<prefix>:<name>" — e.g. "lucide:refrigerator", "material-symbols:humidifier-large", "phosphor:speaker-high", "tabler:washing-machine". Prefer these packs in order: lucide (clean, broad coverage), material-symbols (best for appliances), phosphor, tabler. If you don't know an exact icon name, prefer common nouns: refrigerator, microwave, oven, washing-machine, humidifier, fan, lightbulb, tv, speaker, monitor, laptop, mouse, headphones, printer, gamepad, camera, wrench, screwdriver, coffee, bicycle, car. The icons render white on a dark surface — pick line-style monochrome icons, not multi-color packs (avoid emojione, twemoji, fxemoji).
+
+- `icon_emoji`: a single emoji that represents the same object (e.g. 💧 humidifier, 🧊 fridge, 📱 iPhone). Used as a fallback when the icon CDN is unreachable.
+
+Both fields are required. Pick a single icon_symbol and a single icon_emoji that represent the same physical object.
+
+Also pick a `category` for this procedure — exactly one value from this closed list:
+- "Assembly" — joining parts or components into a working unit for the first time (e.g. mounting a PCB into an enclosure, building a hydraulic pump subassembly, IKEA-style furniture build).
+- "Electrical" — wiring, terminating, or configuring electrical/electronic systems (e.g. crimping a wire harness, programming a PLC I/O module, replacing a fuse block).
+- "Calibration" — setting, adjusting, or verifying that a machine or instrument meets a specified output (e.g. zeroing a torque wrench, tuning a CNC backlash, adjusting a flow sensor setpoint).
+- "Maintenance" — scheduled upkeep that keeps a working system working: cleaning, lubricating, replacing consumables, descaling (e.g. descaling a coffee machine, replacing a filter on a PM schedule, lubricating a chain).
+- "Repair" — diagnosing and fixing a system that has failed or degraded below spec (e.g. replacing a seized bearing after a machine trip, reflowing a cold solder joint).
+- "Inspection" — verifying conformance to a standard without making any change (e.g. visual weld inspection, dimensional check, post-assembly continuity test).
+- "Other" — only when none of the above fits.
+
+Precedence rule for ambiguous cases: if the procedure changes the system state, classify by why — scheduled/preventive → Maintenance; unplanned/corrective → Repair; adjustment to spec → Calibration. If it only checks or records without making any change, it is Inspection. Pick "Other" only as a last resort."""
 
 
 _client: genai.Client | None = None

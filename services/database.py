@@ -55,6 +55,17 @@ def init_db():
         # 'video' (expert upload) | 'manual' (ingested PDF via troubleshoot).
         # Defaulted so existing rows stay valid.
         ("source_type", "TEXT NOT NULL DEFAULT 'video'"),
+        # Procedure-level iconography. SF Symbol name + emoji fallback,
+        # picked by Gemini at extraction time. Empty string on legacy rows
+        # until the backfill script runs.
+        ("icon_symbol", "TEXT NOT NULL DEFAULT ''"),
+        ("icon_emoji", "TEXT NOT NULL DEFAULT ''"),
+        # Closed-enum category Gemini picks at extraction time. Used by the
+        # iOS Discover chip filter. Legacy rows default to 'Other'.
+        ("category", "TEXT NOT NULL DEFAULT 'Other'"),
+        # Online sources cited by troubleshoot web-search flow.
+        # JSON-serialized list of {title, url, snippet}; '[]' on legacy rows.
+        ("sources", "TEXT NOT NULL DEFAULT '[]'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE procedures ADD COLUMN {col} {definition}")
@@ -109,13 +120,21 @@ def save_procedure(procedure: dict, steps: list[dict]):
     """
     conn = _get_conn()
     source_type = procedure.get("source_type", "video")
+    icon_symbol = procedure.get("icon_symbol", "") or ""
+    icon_emoji = procedure.get("icon_emoji", "") or ""
+    category = procedure.get("category", "Other") or "Other"
+    sources_json = json.dumps(procedure.get("sources", []) or [])
     try:
         conn.execute(
             """UPDATE procedures SET title=:title, description=:description,
                total_duration=:total_duration, status=:status,
-               source_type=:source_type
+               source_type=:source_type,
+               icon_symbol=:icon_symbol, icon_emoji=:icon_emoji,
+               category=:category, sources=:sources
                WHERE id=:id""",
-            {**procedure, "source_type": source_type},
+            {**procedure, "source_type": source_type,
+             "icon_symbol": icon_symbol, "icon_emoji": icon_emoji,
+             "category": category, "sources": sources_json},
         )
         for step in steps:
             conn.execute(
@@ -170,6 +189,9 @@ def get_procedure(procedure_id: str) -> dict | None:
         proc = dict(row)
         if proc.get("source_video"):
             proc["source_video"] = Path(proc["source_video"]).name
+        # JSON-deserialize the sources column. Default to [] for rows that
+        # predate the migration or for procedures without web sources.
+        proc["sources"] = json.loads(proc.get("sources") or "[]")
         step_rows = conn.execute(
             "SELECT * FROM steps WHERE procedure_id = ? ORDER BY step_number",
             (procedure_id,),
@@ -201,6 +223,7 @@ def list_procedures() -> list[dict]:
         rows = conn.execute("""
             SELECT p.id, p.title, p.description, p.total_duration, p.created_at,
                    p.status, p.error_message, p.source_type,
+                   p.icon_symbol, p.icon_emoji, p.category, p.sources,
                    COUNT(s.id) as step_count
             FROM procedures p
             LEFT JOIN steps s ON s.procedure_id = p.id
@@ -208,7 +231,12 @@ def list_procedures() -> list[dict]:
             GROUP BY p.id
             ORDER BY p.created_at DESC
         """).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["sources"] = json.loads(d.get("sources") or "[]")
+            result.append(d)
+        return result
     finally:
         conn.close()
 

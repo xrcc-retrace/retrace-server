@@ -118,6 +118,9 @@ async def _process_video(procedure_id: str, video_path: Path, actual_duration: f
             "description": gemini_output.description,
             "total_duration": actual_duration,
             "status": "completed_partial" if failed_steps else "completed",
+            "icon_symbol": gemini_output.icon_symbol,
+            "icon_emoji": gemini_output.icon_emoji,
+            "category": gemini_output.category,
         }
         steps_dicts = [s.model_dump() for s in steps]
         save_procedure(procedure_dict, steps_dicts)

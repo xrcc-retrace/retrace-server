@@ -9,6 +9,7 @@ load_dotenv(BASE_DIR / ".env")
 UPLOAD_DIR = BASE_DIR / "uploads"
 DATA_DIR = BASE_DIR / "data"
 CLIPS_DIR = DATA_DIR / "clips"
+MANUAL_IMAGES_DIR = DATA_DIR / "manual_images"
 DB_PATH = DATA_DIR / "retrace.db"
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -26,5 +27,5 @@ RETRACE_LIVE_MODEL = os.environ.get(
 FFMPEG_PATH = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
 
 # Ensure directories exist
-for d in [UPLOAD_DIR, DATA_DIR, CLIPS_DIR]:
+for d in [UPLOAD_DIR, DATA_DIR, CLIPS_DIR, MANUAL_IMAGES_DIR]:
     d.mkdir(parents=True, exist_ok=True)

@@ -12,9 +12,9 @@ from zeroconf import ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
 
 from config import UPLOAD_DIR
-from routers import expert, learner, procedures, troubleshoot
+from routers import expert, expert_manuals, icons, learner, procedures, troubleshoot
 from services.database import init_db
-from services.troubleshoot.fixtures import schedule_fixtures_load
+from services.fixtures import schedule_fixtures_load
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,9 +56,9 @@ async def lifespan(app: FastAPI):
     # Startup
     init_db()
 
-    # Background fixture loader — ingests the bundled Levoit manual the
-    # first time the server runs against a fresh DB. Non-blocking so
-    # /health and API endpoints come up immediately.
+    # Background fixture loader — ingests the bundled Nespresso descaling
+    # manual the first time the server runs against a fresh DB. Non-blocking
+    # so /health and API endpoints come up immediately.
     fixtures_task = schedule_fixtures_load()
 
     # Bonjour only makes sense on the LAN. In cloud deploys (AWS VPC doesn't
@@ -122,7 +122,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Order matters: more-specific prefixes first so /api/clips/ etc. match before
+# the broader /api/procedures rule.
+CACHE_RULES: list[tuple[str, str]] = [
+    ("/api/clips/", "public, max-age=86400"),
+    ("/api/uploads/", "public, max-age=86400"),
+    ("/api/icons/", "public, max-age=86400"),
+    ("/api/learner/voices", "public, max-age=300"),
+    ("/api/procedures", "public, max-age=30"),
+]
+
+
+@app.middleware("http")
+async def add_cache_control(request, call_next):
+    response = await call_next(request)
+    if request.method == "GET" and 200 <= response.status_code < 300:
+        path = request.url.path
+        for prefix, value in CACHE_RULES:
+            if path.startswith(prefix):
+                response.headers["Cache-Control"] = value
+                break
+    return response
+
+
 app.include_router(expert.router)
+app.include_router(expert_manuals.router)
+app.include_router(icons.router)
 app.include_router(learner.router)
 app.include_router(procedures.router)
 app.include_router(troubleshoot.router)

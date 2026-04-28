@@ -46,7 +46,7 @@ Server listens on `http://0.0.0.0:8000`.
 
 ## Architecture
 
-Two main flows:
+Three main flows: **expert** (record → SOP), **learner** (real-time coaching), and **troubleshoot** (mode-parallel session that diagnoses a broken product and hands off into coaching).
 
 ### Expert flow
 
@@ -96,6 +96,33 @@ iOS app --[POST tool_name, arguments]--> /api/learner/session/{id}/tool-call
 - Sessions are **in-memory only** (a `dict` keyed by session id). They die with the process — no DB table.
 - When the phone sees Gemini's `goAway` frame (~60 s warning) or a socket error, it calls `POST /session/{id}/token?handle=<sessionResumptionUpdate.new_handle>` to mint a token that reopens the prior session with compressed context intact. On reconnect it injects the result of `GET /session/{id}/context-summary` as a user turn to re-orient the model on the real current step.
 
+### Troubleshoot flow
+
+Mode-parallel to learner — own router, own session dict, own prompt builder, but reuses the same Live config + tool dispatcher.
+
+```
+iOS app --[POST voice?]--> /api/troubleshoot/session/start
+       <--[session + troubleshoot system prompt + ephemeral token]----
+                                   │
+                                   ▼
+iOS app <=== direct Gemini Live WebSocket ===> Gemini
+                                   │
+                                   │ tool calls:
+                                   │   identify_product → confirm_identification
+                                   │   → search_procedures (Gemini-ranked over the library)
+                                   │     ↳ no_match → web_search_for_fix
+                                   │       (Gemini Pro + GoogleSearch grounding → structured procedure JSON
+                                   │        with cited URLs; no PDF anymore)
+                                   │   → handoff_to_learner (POST /session/{id}/handoff)
+                                   ▼
+              learner session opens on the chosen procedure
+```
+
+- No procedure is required to start a troubleshoot session. The phase machine progresses `identify → diagnose → fetching-manual → ready-to-coach` (legacy state names; `fetching-manual` now covers `web_search_for_fix`).
+- `web_search_for_fix` replaced the old `fetch_manual` PDF flow — the troubleshoot path no longer ingests PDFs at runtime. PDF ingest still exists, but as an expert-side flow under `/api/expert/manuals/*`.
+- `handoff_to_learner` (renamed from `handoff_to_coaching`) promotes the chosen procedure into a normal learner session and returns the full `SessionStartResponse` so the iOS client can open a coaching socket without a second round-trip.
+- A startup fixture loader ingests a bundled Levoit LV600HH manual on a fresh DB so the demo library isn't empty.
+
 ### Bonjour discovery
 
 On startup the server advertises `_retrace._tcp.local.` on port 8000 via zeroconf. The iOS app's `BonjourDiscovery` populates its cached `serverBaseURL` automatically, with a manual-override UI as the fallback. No hardcoded IPs needed when both devices are on the same Wi-Fi.
@@ -108,20 +135,36 @@ main-local-server-test/
 ├── config.py                  # Paths, GEMINI_API_KEY, GEMINI_MODEL, FFMPEG_PATH (auto-creates data dirs on import)
 ├── requirements.txt
 ├── models/
-│   ├── procedure.py           # GeminiProcedureOutput (structured-output schema) + Procedure / ProcedureStep (API models, with completion_criteria and clip_status)
-│   └── session.py             # Pydantic models for session start/state, StepCompletion (method: "visual" | "verbal"), tool call req/res, ephemeral token response
+│   ├── procedure.py           # GeminiProcedureOutput (structured-output schema) + Procedure / ProcedureStep (API models, with completion_criteria and clip_status). source_type ∈ {video, manual, web}
+│   ├── session.py             # Pydantic models for session start/state, StepCompletion (method: "visual" | "verbal"), tool call req/res, ephemeral token response
+│   └── troubleshoot.py        # Troubleshoot-mode request/response models (session start, state, handoff, manual upload/status, identified product, candidate procedure, diagnostic log entry)
 ├── routers/
 │   ├── expert.py              # POST /api/expert/upload — async background pipeline, timestamp clamping, per-step status bookkeeping
+│   ├── expert_manuals.py      # POST /api/expert/manuals/upload + GET /api/expert/manuals/{id} (PDF → SOP) + GET /api/manual_images/{procedure_id}/step_{n}.png (rendered manual page used as the step "clip")
+│   ├── icons.py               # GET /{prefix}/{name}.png — Iconify icons rendered as white-on-transparent PNGs, disk-cached
 │   ├── learner.py             # Voices list + session lifecycle (start, tool-call forwarding, state, context summary, token refresh with optional ?handle=)
-│   └── procedures.py          # CRUD for procedures / steps + clip serving
+│   ├── procedures.py          # CRUD for procedures / steps + clip serving
+│   └── troubleshoot.py        # Mode-parallel to learner. Importing this router imports services.troubleshoot, which registers its tool handlers with the shared dispatcher.
 ├── services/
 │   ├── gemini_processor.py    # Uploads video to Gemini Files API, polls, generates structured procedure JSON via Gemini 2.5 Pro. Falls back to gemini-2.5-flash on 503.
 │   ├── clip_extractor.py      # Per-step MP4 extraction via ffmpeg subprocess (H.264+AAC, faststart, bt709 colr tags, bf=0 to keep DTS monotonic)
 │   ├── video_probe.py         # ffprobe wrapper — authoritative duration read on upload
-│   ├── database.py            # SQLite (WAL). Tables: procedures, steps. JSON-serialized tips/warnings. Lightweight ALTER-TABLE migrations for new columns.
-│   ├── session.py             # In-memory session store, step advancement with method tagging, context-summary builder, tool-call dispatcher
+│   ├── database.py            # SQLite (WAL). Tables: procedures, steps. JSON-serialized tips/warnings. Lightweight ALTER-TABLE migrations for new columns (source_type on procedures, etc.).
+│   ├── session.py             # In-memory session store, step advancement with method tagging, context-summary builder, tool-call dispatcher (shared by learner + troubleshoot; handlers register at import time)
 │   ├── prompt_builder.py      # Current-step-only system prompt (auto-advance = visual detection; manual = verbal confirmation). Tool definitions + Gemini config.
-│   └── ephemeral_token.py     # Mints v1alpha auth_tokens locked to model + system prompt + tools + voice + transcription + compression + resumption handle
+│   ├── ephemeral_token.py     # Mints v1alpha auth_tokens locked to model + system prompt + tools + voice + transcription + compression + resumption handle
+│   ├── procedure_search.py    # Gemini Flash-ranked search over the existing procedure library by product + symptom (no separate index)
+│   ├── manual_ingest.py       # PDF → structured SOP via Gemini Files API. Shared by expert + troubleshoot via mode={"expert","troubleshoot"}. Renders source_page → PNG in MANUAL_IMAGES_DIR; writes path into step.clip_url so manual procedures plug into existing clip endpoints unchanged.
+│   ├── manual_prompts.py      # Mode-specific Gemini prompts for manual_ingest
+│   ├── pdf_images.py          # PDF page → PNG rasterization
+│   ├── icon_renderer.py       # Iconify SVG → white-on-transparent PNG via cairosvg, disk-cached by Iconify ID
+│   ├── voice_commands.py      # Loads voice_commands.yaml at import; prompt builders look up phrasing by command id
+│   ├── fixtures.py            # Startup loader that ingests bundled manual fixtures (e.g. Levoit LV600HH) on a fresh DB. Scheduled non-blocking from main.py's lifespan.
+│   └── troubleshoot/
+│       ├── session.py         # In-memory troubleshoot store, phase transitions (identify → diagnose → fetching-manual → ready-to-coach), diagnostic log
+│       ├── prompt.py          # Troubleshoot-specific system prompt
+│       ├── handlers.py        # Tool handlers: identify_product, confirm_identification, search_procedures, web_search_for_fix, handoff_to_learner. Registers with the shared dispatcher at import time.
+│       └── web_research.py    # Two-step Gemini Pro pipeline: GoogleSearch grounding (free-form research brief) + structured-output (procedure JSON with cited source URLs). Backs web_search_for_fix; replaced the old fetch_manual flow.
 ├── static/
 │   ├── index.html             # SOP review dashboard
 │   └── voice_previews/        # Pre-generated WAV previews of Gemini voices
@@ -130,6 +173,9 @@ main-local-server-test/
 ├── gemini_live_playground/    # Interactive REPL (`python -m gemini_live_playground`) for behavioral tuning against the production prompt/tools/config. Text I/O via output-transcription stream; tool calls dispatch in-process against services.session. No FastAPI server required. Scenarios in scenarios/*.yaml.
 ├── reprocess_clips.py         # Re-run clip extraction for completed procedures without hitting Gemini again (after tweaking ffmpeg flags)
 ├── reset_data.py              # Wipe all user-generated data (DB rows, uploads, clips) — interactive by default, --yes / --dry-run / --force flags. Preserves code, .venv, .env, voice_previews.
+├── backfill_icons.py          # One-shot: render and cache Iconify PNGs for procedures predating the icon system
+├── validate_voice_commands.py # Lint voice_commands.yaml (schema, uniqueness, referenced-from-code checks)
+├── voice_commands.yaml        # Single source of truth for prompt utterances; designer-editable
 ├── test_live_session.py       # Ad-hoc integration test that drives a Gemini Live session against a running server
 ├── probe_live_models.py       # Which Live model IDs bidiGenerateContent accepts on this API key, plus per-model probes of proactive_audio and video input (curated candidate list)
 ├── probe_list_models.py       # Full models.list() across v1alpha/v1beta/v1 — authoritative source of truth when probe_live_models.py's candidate list comes up empty
@@ -138,6 +184,8 @@ main-local-server-test/
 ├── probe_31_config.py         # Bisect which LiveConnectConfig field the current model rejects — used when a model upgrade breaks the baseline config
 ├── probe_gemini_live_system_instruction.py  # Canary probe: verify Gemini Live honors the system_instruction baked into ephemeral tokens (motivated by the open Google Developers forum report)
 ├── probe_tool_reliability.py  # HIT/MISS rate for advance_step tool calls over many trials — decide if tool calling is reliable enough or if we need the out-of-band transcript fallback
+├── probe_diagnostic_reliability.py  # Analog of probe_tool_reliability.py for troubleshoot-mode tool calls (identify_product, confirm_identification, search_procedures, web_search_for_fix, handoff_to_learner)
+├── fixtures/                  # Bundled manuals loaded on first start when absent from the DB (e.g. levoit_lv600hh_manual.pdf)
 ├── data/
 │   ├── clips/{procedure_id}/step_{n}.mp4
 │   └── retrace.db             # SQLite (WAL mode)
@@ -160,6 +208,15 @@ main-local-server-test/
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/api/expert/upload` | Multipart video upload. Returns `202 {id, status: "processing"}`; background task runs Gemini analysis + clip extraction. Poll `/api/procedures/{id}` for final status. |
+| `POST` | `/api/expert/manuals/upload` | Multipart PDF manual upload. Returns `202 {manual_id}`; background task runs `services.manual_ingest.process_pdf(mode="expert")` → new procedure with `source_type="manual"`. Per-step manual-page PNG is written to `step.clip_url` so the iOS client renders it where it would normally render a clip. |
+| `GET` | `/api/expert/manuals/{manual_id}` | Poll ingest status + (when ready) the resulting `procedure_id`. |
+| `GET` | `/api/manual_images/{procedure_id}/step_{n}.png` | Rendered manual-page PNG used in place of an MP4 clip for manual-sourced procedures. |
+
+### Icons — `/{prefix}/{name}.png`
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/{prefix}/{name}.png` | Iconify icon (e.g. `/lucide/refrigerator.png`) rasterized to a white-on-transparent PNG via `cairosvg`, cached on disk. |
 
 ### Procedures — `/api/procedures`
 
@@ -183,6 +240,20 @@ main-local-server-test/
 | `GET` | `/api/learner/session/{id}/state` | Current step, status, step history (each entry includes `method: "visual" | "verbal"`). |
 | `GET` | `/api/learner/session/{id}/context-summary` | Compact text blob the phone injects as a user message after context compression or reconnect to re-orient the model. |
 | `DELETE` | `/api/learner/session/{id}` | End and discard the session. |
+
+### Troubleshoot — `/api/troubleshoot`
+
+Mode-parallel to learner — same Live config and dispatcher, no procedure required at start.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/troubleshoot/session/start` | Body: `{voice?}`. Returns session id, troubleshoot system prompt, tool definitions, ephemeral token. |
+| `POST` | `/api/troubleshoot/session/{id}/token[?handle=...]` | Resumption-aware token refresh, same semantics as the learner endpoint. |
+| `POST` | `/api/troubleshoot/session/{id}/tool-call` | Tools: `identify_product`, `confirm_identification`, `search_procedures`, `web_search_for_fix`, `handoff_to_learner`. |
+| `GET`  | `/api/troubleshoot/session/{id}/state` | Current phase, identified product, candidate procedures, diagnostic log. |
+| `POST` | `/api/troubleshoot/session/{id}/handoff` | Promote a chosen `procedure_id` into a fresh learner session; returns the full `SessionStartResponse`. |
+| `DELETE` | `/api/troubleshoot/session/{id}` | End and discard. |
+| `GET` | `/api/troubleshoot/sessions` | List active troubleshoot sessions. |
 
 ## Gemini Live config
 

@@ -7,7 +7,7 @@ tool-handler registration with the shared session dispatcher.
 import asyncio
 import logging
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, HTTPException
 
 from models.procedure import Procedure
 from models.session import (
@@ -20,8 +20,6 @@ from models.session import (
 )
 from models.troubleshoot import (
     HandoffRequest,
-    ManualStatusResponse,
-    ManualUploadResponse,
     TroubleshootSessionStartRequest,
     TroubleshootSessionStartResponse,
     TroubleshootSessionState,
@@ -33,8 +31,7 @@ from services.prompt_builder import (
     TOOL_DEFINITIONS as LEARNER_TOOL_DEFINITIONS,
     build_system_prompt,
 )
-from services.troubleshoot import manual_ingest  # noqa: F401 — also triggers package import
-from services.troubleshoot import session as ts_session
+from services.troubleshoot import session as ts_session  # also triggers package import (handler registration)
 from services.troubleshoot.prompt import (
     DIAGNOSTIC_TOOL_DEFINITIONS,
     GEMINI_CONFIG_DIAGNOSTIC,
@@ -184,44 +181,6 @@ async def end_session(session_id: str):
 async def list_sessions():
     """List all active + recent diagnostic sessions for the dashboard."""
     return ts_session.list_active_sessions()
-
-
-# ---- Manual upload / ingest -----------------------------------------------
-
-
-@router.post("/manuals/upload", response_model=ManualUploadResponse)
-async def upload_manual(pdf: UploadFile = File(...)):
-    """Upload a PDF manual. Returns the manual_id; actual ingest runs when
-    Gemini calls generate_sop_from_manual with this id.
-    """
-    if pdf.content_type not in ("application/pdf", "application/octet-stream"):
-        raise HTTPException(400, f"Expected PDF, got {pdf.content_type}")
-    data = await pdf.read()
-    if not data:
-        raise HTTPException(400, "Empty upload")
-    manual_id = manual_ingest.save_uploaded_manual(data, pdf.filename or "upload.pdf")
-    entry = manual_ingest.get_manual_status(manual_id)
-    return ManualUploadResponse(
-        manual_id=manual_id,
-        status=entry["status"],
-        filename=entry["filename"],
-    )
-
-
-@router.get("/manuals/{manual_id}", response_model=ManualStatusResponse)
-async def manual_status(manual_id: str):
-    """Poll a manual's ingest status. When `status == 'ready'`, `procedure_id`
-    is the newly-generated procedure."""
-    entry = manual_ingest.get_manual_status(manual_id)
-    if not entry:
-        raise HTTPException(404, "Manual not found")
-    return ManualStatusResponse(
-        manual_id=entry["manual_id"],
-        status=entry["status"],
-        procedure_id=entry.get("procedure_id"),
-        error=entry.get("error"),
-        filename=entry["filename"],
-    )
 
 
 # ---- Helpers --------------------------------------------------------------
