@@ -10,3 +10,13 @@ data/retrace.db
 data/retrace.db-journal
 data/retrace.db-wal
 data/retrace.db-shm
+
+# User-generated and runtime-rendered artifacts. Same reason as the DB:
+# the production server writes here on every upload, manual ingest, and
+# icon render — tracking them would break `git pull` on deploy and would
+# also push local demo recordings to the public repo.
+uploads/
+data/clips/
+data/manuals/
+data/manual_images/
+data/icons/
