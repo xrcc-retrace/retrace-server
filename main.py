@@ -128,6 +128,8 @@ CACHE_RULES: list[tuple[str, str]] = [
     ("/api/clips/", "public, max-age=86400"),
     ("/api/uploads/", "public, max-age=86400"),
     ("/api/icons/", "public, max-age=86400"),
+    ("/api/manual_images/", "public, max-age=86400"),
+    ("/static/voice_previews/", "public, max-age=86400, immutable"),
     ("/api/learner/voices", "public, max-age=300"),
     ("/api/procedures", "public, max-age=30"),
 ]

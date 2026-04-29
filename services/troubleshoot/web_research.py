@@ -9,15 +9,19 @@ Design notes
 ------------
 - `google_search` and `response_schema` are mutually exclusive on the
   v1beta `generateContent` endpoint, so we run two calls:
-  * Step 1: Gemini Pro + GoogleSearch tool → free-form research brief +
-    grounding metadata (URIs of cited pages).
+  * Step 1: Gemini Flash + GoogleSearch tool → free-form research brief +
+    grounding metadata (URIs of cited pages). One-shot search bias —
+    issue one strong query, stop as soon as a high-signal community
+    thread (Reddit/iFixit) names the cause and fix.
   * Step 2: Gemini Pro + structured output → final procedure JSON, with
     the source URLs from step 1 baked verbatim into the prompt so the
     model echoes them back into the `sources` array.
+- Step 1 uses Flash + `thinking_budget=0` for latency. Step 2 stays on
+  Pro because step 2 has no web access — it must reconstruct the actual
+  repair steps from the brief alone, so synthesis quality matters.
 - Each leg has the same Pro→Flash 503 fallback pattern as
-  `services.gemini_processor`.
-- Default both legs to Pro (accuracy > latency). Module constants below
-  let us flip step 2 to Flash if the demo needs more headroom.
+  `services.gemini_processor` (step 1's "fallback" is a no-op since it
+  already runs on Flash, but the structure stays uniform).
 """
 
 import asyncio
@@ -33,22 +37,21 @@ from models.procedure import GeminiProcedureOutput
 
 logger = logging.getLogger(__name__)
 
-# Default to Pro on both legs because the user's stated priority is
-# accuracy over latency for troubleshoot. STEP2 can be flipped to
-# "gemini-2.5-flash" if synthesis quality stays solid and we need to
-# claw back ~3-5s.
-STEP1_MODEL = "gemini-2.5-pro"
-# Both legs default to Pro because user prioritizes accuracy over latency
-# for troubleshoot. Pro grounded search + Pro structured synthesis can
-# take 30-60s end-to-end on cold calls; Flash is the fallback ONLY on
-# transient server errors (503/504/429). Do NOT switch step 2 to Flash
-# by default — Flash structured-output quality on technical procedures
-# is meaningfully worse and the user has explicitly chosen accuracy.
+# Step 1: Flash + zero thinking budget for fast grounded search. The
+# brief is mostly summarization of pages Google retrieved; Flash handles
+# that fine and the prompt enforces a one-shot search loop with strong
+# Reddit/iFixit bias.
+STEP1_MODEL = "gemini-2.5-flash"
+# Step 2 stays on Pro: it has NO web access (google_search and
+# response_schema are mutually exclusive) so it must reconstruct the
+# actual repair steps from step 1's brief alone. Flash drops mechanical
+# detail here (wrong screw count, missing safety step). Pro is the
+# fallback only on transient server errors (503/504/429).
 STEP2_MODEL = "gemini-2.5-pro"
 FALLBACK_MODEL = "gemini-2.5-flash"
-# 60s per leg. Pro grounded search has been observed at ~30s; Pro
-# structured synthesis around ~10-15s; the budget keeps both within
-# Google's own deadline so we don't tail into 504 during normal load.
+# 60s per leg. Flash one-shot grounded search lands ~6-12s; Pro
+# structured synthesis ~10-15s; the budget keeps both within Google's
+# own deadline so we don't tail into 504 during normal load.
 STEP_TIMEOUT_MS = 60_000
 # HTTP codes we treat as "transient — retry on Flash". 503 is the
 # documented overload signal; 504 fires on backend deadline; 429 is rate
@@ -73,18 +76,19 @@ def _get_client() -> genai.Client:
 _STEP1_SYSTEM = """You are a repair-research assistant. Your ONLY job is to search the live web and report what real people have written about fixing the user's problem. You have NO domain knowledge of your own to draw on — every factual claim you make MUST come from a page you actually retrieved via the google_search tool in this turn.
 
 REQUIRED — Tool use, not memory:
-- You MUST call the google_search tool. Issue at least 3 search queries before you start writing.
-- Do NOT answer from prior knowledge. If you have not searched, say so and stop.
-- Strong query examples: "<product model> <symptom> reddit", "<product model> <symptom> ifixit", "<product model> <symptom> fix forum".
+- You MUST call the google_search tool. Do NOT answer from prior knowledge. If you have not searched, say so and stop.
+- ONE-SHOT SEARCH: issue ONE strong query first. As soon as that query returns a high-signal Reddit / iFixit / community-forum thread that names the likely cause AND the fix, STOP SEARCHING and write the brief. Do not chain follow-up queries for completeness — speed matters more than coverage.
+- Only issue a second query if the first returns no usable hits at all. Cap at two queries total.
+- Strong first-query shape: `"<product model> <symptom> reddit OR ifixit"`. If that draws a blank, try `"<product model> <symptom> fix forum"`.
 
-SOURCE BIAS — apply in this order:
-1. Prefer Reddit threads (r/fixit, product-specific subs) and iFixit guides — real owners, real fixes, real failure modes.
-2. Defer to manufacturer / OEM documentation ONLY when the step involves: AC mains wiring, chemical handling, refrigerant, or pressure-vessel release. For those, OEM is authoritative.
+SOURCE BIAS — apply STRICTLY in this order:
+1. STRONGLY PREFER community sources — Reddit threads (r/fixit, product-specific subs), iFixit guides, repair forums. Real owners, real fixes, real failure modes. These are your default authority for the cause and the hands-on repair steps.
+2. Manufacturer / OEM documentation is a LAST RESORT for the actual fix. Manufacturer manuals tell you how to use the product, not how to repair it. Cite OEM ONLY when the step involves AC mains wiring, chemical handling, refrigerant, or pressure-vessel release — and even then, only for those specific safety-critical steps. Everything else: prefer the community.
 3. Treat blogspam, SEO listicles, and AI-content-farm sites as last resorts.
 
-OUTPUT FORMAT — plain prose, no markdown, no JSON:
-- 2-4 paragraphs of practical repair guidance for THIS specific symptom on THIS specific product, drawn directly from sources you retrieved.
-- Cover the most likely cause, the diagnostic checks that confirm it, and the fix.
+OUTPUT FORMAT — plain prose, no markdown, no JSON, ~250-400 words:
+- Open with one short paragraph naming the most likely cause and the diagnostic check that confirms it.
+- Then a clear sequence of the repair steps as the source threads describe them — concrete actions, in order, with the mechanical detail your sources actually provide (which part to remove, which direction, what to look for, how long to soak/wait, etc.). This is what the next stage will turn into a step-by-step procedure for a first-time learner, so include the substantive how-to.
 - Cite each source inline by URL the first time you draw on it.
 - If the live web search returns nothing useful for this exact problem, say so explicitly in one sentence — do not pad with general advice."""
 
@@ -264,6 +268,10 @@ async def _step1_research(
             config=types.GenerateContentConfig(
                 system_instruction=_STEP1_SYSTEM,
                 tools=[types.Tool(google_search=types.GoogleSearch())],
+                # Disable thinking on step 1 — Flash + grounded search is
+                # already doing retrieval; the extra reasoning budget mostly
+                # buys latency, not quality. ~5-8s saved per call.
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
                 http_options=types.HttpOptions(timeout=STEP_TIMEOUT_MS),
             ),
         )
