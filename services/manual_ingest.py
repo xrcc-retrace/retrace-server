@@ -30,13 +30,14 @@ from google.genai import types
 from google.genai.errors import ServerError
 
 from config import DATA_DIR, GEMINI_API_KEY, GEMINI_MODEL, MANUAL_IMAGES_DIR
-from models.procedure import GeminiProcedureOutput
+from models.procedure import GeminiManualProcedureOutput
 from services.database import (
     create_procedure_placeholder,
     save_procedure,
     update_procedure_status,
 )
 from services.manual_prompts import EXPERT_MANUAL_PROMPT, TROUBLESHOOT_MANUAL_PROMPT
+from services.metadata_picker import pick_metadata
 from services.pdf_images import (
     BBoxRejected,
     list_image_regions,
@@ -148,7 +149,12 @@ async def ingest_manual(
     entry["status"] = "processing"
     procedure_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
-    create_procedure_placeholder(procedure_id, source_video=str(pdf_path), created_at=created_at)
+    create_procedure_placeholder(
+        procedure_id,
+        source_video=str(pdf_path),
+        created_at=created_at,
+        source_type="manual",
+    )
 
     client = _get_client()
 
@@ -187,7 +193,7 @@ async def ingest_manual(
                 contents=contents,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    response_schema=GeminiProcedureOutput,
+                    response_schema=GeminiManualProcedureOutput,
                     http_options=types.HttpOptions(timeout=timeout_ms),
                 ),
             )
@@ -200,37 +206,50 @@ async def ingest_manual(
             logger.warning("Manual ingest: %s returned 503, falling back to %s", GEMINI_MODEL, FALLBACK_MODEL)
             response = await asyncio.to_thread(_generate, FALLBACK_MODEL, FLASH_TIMEOUT_MS)
 
-        parsed = GeminiProcedureOutput.model_validate_json(response.text)
+        parsed = GeminiManualProcedureOutput.model_validate_json(response.text)
 
         # Render per-step reference images. Failure on a single step is
         # tolerated: that step lands with clip_url=None / clip_status='none'.
-        image_urls = await asyncio.to_thread(
-            _render_step_images,
-            pdf_path=pdf_path,
-            procedure_id=procedure_id,
-            steps=parsed.steps[:15],
+        # Run image rendering and metadata picking concurrently — rendering
+        # is CPU/disk-bound (PyMuPDF in a worker thread), pick_metadata is
+        # network-bound on Flash, so they overlap cleanly.
+        image_urls, metadata = await asyncio.gather(
+            asyncio.to_thread(
+                _render_step_images,
+                pdf_path=pdf_path,
+                procedure_id=procedure_id,
+                steps=parsed.steps[:15],
+            ),
+            pick_metadata(
+                context=f"Product: {product_name}\nTitle: {parsed.title}\nDescription: {parsed.description}",
+            ),
         )
 
         procedure_row = {
             "id": procedure_id,
             "title": parsed.title,
             "description": parsed.description,
-            "total_duration": parsed.total_duration,
+            # PDF procedures aren't backed by a video — total_duration is
+            # meaningless. Hardcode 0.0; the new schema doesn't carry
+            # this field at all (that's the slim-down).
+            "total_duration": 0.0,
             "status": "completed",
             "source_type": "manual",
-            "icon_symbol": parsed.icon_symbol,
-            "icon_emoji": parsed.icon_emoji,
-            "category": parsed.category,
+            "icon_symbol": metadata["icon_symbol"],
+            "category": metadata["category"],
         }
         step_rows = []
-        for s in parsed.steps[:15]:
+        for idx, s in enumerate(parsed.steps[:15], start=1):
             url = image_urls.get(s.step_number)
             step_rows.append({
                 "step_number": s.step_number,
                 "title": s.title,
                 "description": s.description,
-                "timestamp_start": s.timestamp_start,
-                "timestamp_end": s.timestamp_end,
+                # Server-fill placeholder timestamps — the manual schema
+                # doesn't ask Pro for these, so we synthesize 0/30/60…
+                # for API compatibility with the database layer.
+                "timestamp_start": (idx - 1) * 30.0,
+                "timestamp_end": idx * 30.0,
                 "tips": s.tips,
                 "warnings": s.warnings,
                 "completion_criteria": s.completion_criteria,

@@ -139,6 +139,12 @@ CACHE_RULES: list[tuple[str, str]] = [
 async def add_cache_control(request, call_next):
     response = await call_next(request)
     if request.method == "GET" and 200 <= response.status_code < 300:
+        # Respect a Cache-Control already set by the route — that's how
+        # /api/procedures opts into no-store to keep iOS URLCache from
+        # serving a stale list after a fresh upload (see
+        # routers/procedures.py).
+        if "cache-control" in (k.lower() for k in response.headers):
+            return response
         path = request.url.path
         for prefix, value in CACHE_RULES:
             if path.startswith(prefix):

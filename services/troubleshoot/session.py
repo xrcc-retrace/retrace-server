@@ -45,6 +45,7 @@ def create_diagnostic_session(voice: str = "Charon") -> dict:
     s["handoff_target"] = None               # procedure_id once Gemini commits
     s["handoff_learner_session_id"] = None   # once /handoff spins up learner
     s["diagnostic_log"] = []                 # [{ts, tool, args, result}]
+    s["web_search_progress"] = None          # see init_/update_web_search_progress
     return s
 
 
@@ -91,6 +92,70 @@ def set_candidate_procedures(session_id: str, candidates: list[dict]) -> None:
     if not s or s.get("session_type") != "troubleshoot":
         return
     s["candidate_procedures"] = candidates
+
+
+def init_web_search_progress(session_id: str) -> dict | None:
+    """Initialize the per-session web-search progress block.
+
+    Called by `_handle_web_search_for_fix` at the top of the handler so
+    the iOS client can immediately see `phase=searching_web` on its next
+    poll of /state. Returns the progress dict for direct use by the
+    handler's update closure (one less get_session round-trip per
+    update).
+    """
+    s = shared_session.get_session(session_id)
+    if not s or s.get("session_type") != "troubleshoot":
+        return None
+    now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    s["web_search_progress"] = {
+        "phase": "searching_web",
+        "source_count": None,
+        "procedure_id": None,
+        "error_message": None,
+        "started_at": now,
+        "updated_at": now,
+    }
+    logger.info(
+        "Troubleshoot session %s: web_search_progress phase=searching_web",
+        session_id,
+    )
+    return s["web_search_progress"]
+
+
+def update_web_search_progress(session_id: str, phase: str, **extra) -> None:
+    """Update the progress block. Caller passes any of:
+        source_count: int
+        procedure_id: str
+        error_message: str
+    Unknown keys are ignored. No-op if the session has no progress
+    block (handler always seeds one with init_, but tolerate races).
+    """
+    s = shared_session.get_session(session_id)
+    if not s or s.get("session_type") != "troubleshoot":
+        return
+    progress = s.get("web_search_progress")
+    if progress is None:
+        # Handler should have called init_web_search_progress first;
+        # build a minimal block on the fly so we never drop a signal.
+        now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        progress = {
+            "phase": phase,
+            "source_count": None,
+            "procedure_id": None,
+            "error_message": None,
+            "started_at": now,
+            "updated_at": now,
+        }
+        s["web_search_progress"] = progress
+    progress["phase"] = phase
+    for key in ("source_count", "procedure_id", "error_message"):
+        if key in extra:
+            progress[key] = extra[key]
+    progress["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    logger.info(
+        "Troubleshoot session %s: web_search_progress phase=%s extra=%s",
+        session_id, phase, {k: v for k, v in extra.items() if v is not None},
+    )
 
 
 def set_handoff_target(session_id: str, procedure_id: str, summary: str) -> None:

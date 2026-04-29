@@ -85,14 +85,26 @@ def init_db():
     logger.info("Database initialized at %s", DB_PATH)
 
 
-def create_procedure_placeholder(procedure_id: str, source_video: str, created_at: str):
-    """Insert a placeholder procedure row with status='processing'."""
+def create_procedure_placeholder(
+    procedure_id: str,
+    source_video: str,
+    created_at: str,
+    source_type: str = "video",
+):
+    """Insert a placeholder procedure row with status='processing'.
+
+    `source_type` is set on the placeholder so the iOS workflow card can
+    show source-type-aware copy (e.g. "Reading manual…" vs
+    "Analyzing video…") DURING the processing window. If we leave it to
+    the column default, every PDF placeholder shows as "video" until
+    Gemini extraction completes and save_procedure() overwrites it.
+    """
     conn = _get_conn()
     try:
         conn.execute(
-            """INSERT INTO procedures (id, title, description, total_duration, source_video, created_at, status)
-               VALUES (?, '', '', 0, ?, ?, 'processing')""",
-            (procedure_id, source_video, created_at),
+            """INSERT INTO procedures (id, title, description, total_duration, source_video, created_at, status, source_type)
+               VALUES (?, '', '', 0, ?, ?, 'processing', ?)""",
+            (procedure_id, source_video, created_at, source_type),
         )
         conn.commit()
     finally:

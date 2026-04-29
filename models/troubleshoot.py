@@ -37,6 +37,34 @@ class DiagnosticLogEntry(BaseModel):
     procedure_id: str | None = None
 
 
+class WebSearchProgress(BaseModel):
+    """Progress signal for the `web_search_for_fix` tool call.
+
+    Lives on the troubleshoot session and is exposed via
+    `GET /api/troubleshoot/session/{id}/state`. iOS polls the state
+    endpoint while a `web_search_for_fix` call is in flight and renders
+    UI off the `phase` field.
+
+    Phase progression on the happy path:
+        searching_web → synthesizing → complete
+    Terminal failure phases:
+        no_fix_found  (web returned nothing usable)
+        timeout       (overall wall-clock budget exceeded — see
+                       services.troubleshoot.handlers.WEB_SEARCH_TIMEOUT_S)
+        error         (transport / SDK / save failure)
+
+    `source_count` is set when the phase advances past `searching_web`.
+    `procedure_id` is set when the phase reaches `complete`.
+    `error_message` is set when the phase reaches `error` or `timeout`.
+    """
+    phase: str  # "searching_web" | "synthesizing" | "complete" | "no_fix_found" | "timeout" | "error"
+    source_count: int | None = None
+    procedure_id: str | None = None
+    error_message: str | None = None
+    started_at: str
+    updated_at: str
+
+
 class TroubleshootSessionState(BaseModel):
     session_id: str
     session_type: str = "troubleshoot"
@@ -49,6 +77,10 @@ class TroubleshootSessionState(BaseModel):
     handoff_target: str | None = None
     handoff_learner_session_id: str | None = None
     diagnostic_log: list[dict] = []
+    # Set while `web_search_for_fix` is in flight (and stays populated
+    # after it completes so a slow poll still sees the final state).
+    # `null` when no web search has been kicked off this session.
+    web_search_progress: WebSearchProgress | None = None
 
 
 class TroubleshootSessionStartResponse(BaseModel):

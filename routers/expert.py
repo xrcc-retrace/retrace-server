@@ -48,7 +48,10 @@ async def upload_expert_video(video: UploadFile = File(...)):
         logger.error("ffprobe failed on upload %s: %s", video_path, exc)
         raise HTTPException(400, f"Could not probe uploaded video: {exc}") from exc
 
-    created_at = datetime.now(timezone.utc).isoformat()
+    # millisecond precision so iOS's ISO8601DateFormatter.withFractionalSeconds
+    # can parse this — Python's default 6-digit microsecond output silently
+    # fails to parse on iOS and the procedure won't appear in workflows.
+    created_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     create_procedure_placeholder(procedure_id, str(video_path), created_at)
 
     # Fire-and-forget background processing
@@ -62,17 +65,20 @@ async def _process_video(procedure_id: str, video_path: Path, actual_duration: f
     try:
         gemini_output = await process_expert_video(str(video_path), GEMINI_API_KEY)
 
-        # Clamp Gemini timestamps to the true video bounds
+        # Clamp Gemini timestamps to the true video bounds. process_expert_video
+        # now returns a dict (not a Pydantic instance) so its top-level fields
+        # are dict keys; per-step entries are themselves dicts.
         clamped_steps: list[dict] = []
-        for s in gemini_output.steps:
-            start = max(0.0, min(s.timestamp_start, actual_duration))
-            end = max(start, min(s.timestamp_end, actual_duration))
-            if (start, end) != (s.timestamp_start, s.timestamp_end):
+        for s in gemini_output["steps"]:
+            raw_start, raw_end = s["timestamp_start"], s["timestamp_end"]
+            start = max(0.0, min(raw_start, actual_duration))
+            end = max(start, min(raw_end, actual_duration))
+            if (start, end) != (raw_start, raw_end):
                 logger.warning(
                     "Step %d timestamps clamped: (%.2f, %.2f) -> (%.2f, %.2f)",
-                    s.step_number, s.timestamp_start, s.timestamp_end, start, end,
+                    s["step_number"], raw_start, raw_end, start, end,
                 )
-            step_dict = s.model_dump()
+            step_dict = dict(s)
             step_dict["timestamp_start"] = start
             step_dict["timestamp_end"] = end
             clamped_steps.append(step_dict)
@@ -107,6 +113,7 @@ async def _process_video(procedure_id: str, video_path: Path, actual_duration: f
                 tips=s.get("tips", []),
                 warnings=s.get("warnings", []),
                 completion_criteria=s.get("completion_criteria", ""),
+                error_criteria=s.get("error_criteria", []),
                 clip_url=clip_url,
                 clip_status=clip_status,
             ))
@@ -114,20 +121,20 @@ async def _process_video(procedure_id: str, video_path: Path, actual_duration: f
         # Save completed procedure to database
         procedure_dict = {
             "id": procedure_id,
-            "title": gemini_output.title,
-            "description": gemini_output.description,
+            "title": gemini_output["title"],
+            "description": gemini_output["description"],
             "total_duration": actual_duration,
             "status": "completed_partial" if failed_steps else "completed",
-            "icon_symbol": gemini_output.icon_symbol,
-            "icon_emoji": gemini_output.icon_emoji,
-            "category": gemini_output.category,
+            "icon_symbol": gemini_output["icon_symbol"],
+            "icon_emoji": gemini_output["icon_emoji"],
+            "category": gemini_output["category"],
         }
         steps_dicts = [s.model_dump() for s in steps]
         save_procedure(procedure_dict, steps_dicts)
 
         logger.info(
             "Procedure created: %s (%s, %d steps, status=%s)",
-            procedure_id, gemini_output.title, len(steps), procedure_dict["status"],
+            procedure_id, gemini_output["title"], len(steps), procedure_dict["status"],
         )
     except Exception as e:
         logger.error("Background processing failed for %s: %s", procedure_id, e)

@@ -27,13 +27,24 @@ Design notes
 import asyncio
 import logging
 from dataclasses import dataclass
+from typing import Callable
 
 from google import genai
 from google.genai import types
 from google.genai.errors import ServerError
 
 from config import GEMINI_API_KEY
-from models.procedure import GeminiProcedureOutput
+from models.procedure import GeminiWebProcedureOutput
+from services.metadata_picker import pick_metadata
+
+
+# Optional progress-signal callback. The caller (handler) wires this
+# into the troubleshoot session so iOS can poll /state and watch the
+# phase advance from `searching_web` → `synthesizing` → `complete`.
+# Terminal phases (`complete` / `no_fix_found` / `error`) are emitted
+# by the handler, not this module — `research_and_extract` doesn't
+# know about persistence or session lifetime.
+PhaseCallback = Callable[[str, dict], None]
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +69,28 @@ STEP_TIMEOUT_MS = 60_000
 # limit. All three are recoverable with a different model/route.
 _TRANSIENT_CODES = {429, 503, 504}
 MAX_SOURCES = 8
+
+# Gemini 2.5 Pro can't disable thinking (floor is 128 tokens; cannot be
+# set to 0 like Flash can). Default is dynamic (-1), which lets Pro
+# spend up to ~8192 thinking tokens — that's most of the 30+ second
+# wall-clock on step 2. Pinning to the documented floor (128) is the
+# biggest available latency lever for this model. Bump up if synthesis
+# quality regresses (mechanical detail dropped, steps too generic).
+STEP2_THINKING_BUDGET = 128
+# Synthesis is reconstruction from a fixed prose brief — there's no
+# value in sampling diverse continuations. Determinism stops Pro from
+# exploring low-probability branches and tightens generation.
+STEP2_TEMPERATURE = 0.0
+
+# Bias the metadata picker toward the two categories web fixes almost
+# always land in. Falls back to "Other" if Flash chooses something
+# clearly off-domain (very rare in practice).
+_WEB_CATEGORY_HINT = (
+    "Web-search-derived fix procedures almost always land in 'Repair' "
+    "(unplanned/corrective fix) or 'Maintenance' (scheduled upkeep — "
+    "cleaning, descaling, replacing consumables). Pick one of those "
+    "unless the procedure is clearly something else."
+)
 
 
 _client: genai.Client | None = None
@@ -102,34 +135,13 @@ Diagnostic context (already established with the user):
 Search the web and produce the brief."""
 
 
-_STEP2_SYSTEM = """You are a procedure analyst. Given a research brief about how to fix a problem and a list of sources used, synthesize a step-by-step repair procedure that an AI coach can teach a first-time learner.
+_STEP2_SYSTEM = """You are a procedure analyst. Given a research brief about how to fix a problem, synthesize a step-by-step repair procedure that an AI coach can teach a first-time learner.
 
-HARD RULES
-1. Cap at 15 steps. Prefer fewer when fewer suffice.
-2. Each step:
-   - title: short and action-oriented ("Unplug the unit", "Remove the water tank").
-   - description: 1-3 sentences a first-time learner can follow. Concrete actions.
-   - timestamp_start / timestamp_end: start at 0.0 and increment by ~30 seconds per step. Placeholders only — there is no video.
-   - tips: short technique notes (when to be gentle, which direction). [] if none.
-   - warnings: safety callouts. [] if none.
-   - completion_criteria: ONE observable end-state sentence written for VLM verification from a head-mounted camera. Prefer LED color/blink changes, lid open vs closed, container present vs absent, water level above/below a marker, lever locked vs unlocked. AVOID fine alignment, sub-millimeter offsets, counting events, torque, text recognition, elapsed time.
-   - error_criteria: exactly THREE single-sentence observable visual errors. Same rules — visible state in a single frame, named object plus named wrong configuration, no judgment words ("incorrectly"), no cognitive claims ("learner forgets"), mutually distinct.
-   - source_page: 0 (this is a web-derived procedure, not a PDF).
+Guidelines:
+- Each step must be a discrete, actionable unit a first-time learner can perform safely.
+- Field-level shape requirements live in the response schema (GeminiWebProcedureOutput) — follow the field descriptions there for title, description, tips, warnings, completion_criteria, and the step cap.
 
-3. SOURCE BIAS for which steps you trust:
-   - Reddit + iFixit are the default authority for hands-on technique.
-   - Manufacturer/OEM is authoritative ONLY for steps involving AC mains wiring, chemicals, refrigerant, or pressure release.
-
-4. SOURCES ARRAY — populate the top-level `sources` field VERBATIM from the list provided below. Do NOT invent or modify URLs. Do NOT add sources that aren't in the list. For each entry, write a `snippet` that is one short sentence stating what that source contributed to the procedure (e.g. "Confirms that the cause is mineral buildup on the transducer.").
-
-5. Title: "{product_name} — <2-5 word task summary>".
-6. Description: one sentence naming the product and the fix.
-
-7. icon_symbol: Iconify ID like "lucide:humidifier" (packs in priority: lucide, material-symbols, phosphor, tabler — line-style monochrome only).
-8. icon_emoji: single emoji fallback.
-9. category: exactly one of "Assembly", "Electrical", "Calibration", "Maintenance", "Repair", "Inspection", "Other". Web-derived fix procedures almost always land in "Repair" or "Maintenance". Use "Other" only as last resort.
-
-Output JSON matching the GeminiProcedureOutput schema."""
+Output JSON matching the GeminiWebProcedureOutput schema."""
 
 
 _STEP2_USER = """Product: {product_name}
@@ -140,9 +152,6 @@ Diagnostic context already collected with the user:
 
 Research brief from the web:
 {research_text}
-
-Sources to use (copy these VERBATIM into the `sources` array; add a one-sentence `snippet` per source describing its contribution):
-{sources_block}
 
 Output the procedure JSON."""
 
@@ -166,13 +175,37 @@ async def research_and_extract(
     product_name: str,
     symptom: str,
     diagnostic_summary: str,
+    on_phase: PhaseCallback | None = None,
 ) -> ResearchResult | None:
     """Two-step Gemini pipeline. Returns None when search yielded nothing
     or the synthesis came back empty — caller maps to `no_fix_found`.
     Raises on hard transport/SDK failures so the handler can surface
     `error` rather than `no_fix_found`.
+
+    `on_phase`, when supplied, is invoked at progress-signal boundaries
+    so the caller can mutate session state for iOS to poll. Phases
+    emitted by this function:
+      - `searching_web` — fired immediately, before step 1 starts.
+      - `synthesizing` — fired after step 1 returns sources, before
+        step 2 + pick_metadata start. Carries `source_count`.
+    Terminal phases (`complete`, `no_fix_found`, `error`) are the
+    caller's job — only the handler knows about persistence.
     """
+    def _emit(phase: str, **extra) -> None:
+        if on_phase is None:
+            return
+        try:
+            on_phase(phase, extra)
+        except Exception as exc:
+            # Progress signaling is best-effort — don't fail the
+            # pipeline because the callback raised.
+            logger.warning("web_research: on_phase callback failed: %s", exc)
+
     client = _get_client()
+
+    # Phase 1 — searching the web. Emit BEFORE the network call so iOS
+    # sees the state flip the moment the handler kicks off.
+    _emit("searching_web")
 
     # Step 1: grounded research
     step1 = await _step1_research(client, product_name, symptom, diagnostic_summary)
@@ -191,14 +224,27 @@ async def research_and_extract(
         logger.info("web_research: empty research brief; treating as no_fix_found")
         return None
 
-    # Step 2: structured synthesis
-    parsed = await _step2_synthesize(
-        client,
-        product_name=product_name,
-        symptom=symptom,
-        diagnostic_summary=diagnostic_summary,
-        research_text=research_text,
-        sources=sources,
+    # Phase 2 — synthesizing. Now we know the source count, hand it off
+    # to iOS so the UI can render "Found N sources, writing the
+    # procedure…".
+    _emit("synthesizing", source_count=len(sources))
+
+    # Step 2 + pick_metadata in parallel. Wall-clock = max(step2, pick).
+    # Step 2 dominates at ~14 s on Pro; pick_metadata lands in 1-2 s and
+    # hides behind it.
+    parsed, metadata = await asyncio.gather(
+        _step2_synthesize(
+            client,
+            product_name=product_name,
+            symptom=symptom,
+            diagnostic_summary=diagnostic_summary,
+            research_text=research_text,
+        ),
+        pick_metadata(
+            context=f"Product: {product_name}\nSymptom: {symptom}",
+            category_hint=_WEB_CATEGORY_HINT,
+            default_category="Repair",
+        ),
     )
     if parsed is None or not parsed.steps:
         logger.info(
@@ -208,32 +254,43 @@ async def research_and_extract(
         return None
 
     # Build the dicts save_procedure expects. The handler attaches id +
-    # source_video + created_at and persists.
+    # source_video + created_at and persists. Metadata fields come from
+    # pick_metadata (Flash); the synthesizer is told to emit defaults.
     procedure_dict = {
         "title": parsed.title,
         "description": parsed.description,
-        "total_duration": parsed.total_duration or 0.0,
+        # Web procedures aren't backed by a video — total_duration is
+        # meaningless. Hardcode 0.0; the new schema doesn't carry this
+        # field at all (that's part of the slim-down).
+        "total_duration": 0.0,
         "status": "completed",
         "source_type": "web",
-        "icon_symbol": parsed.icon_symbol,
-        "icon_emoji": parsed.icon_emoji,
-        "category": parsed.category,
-        # Prefer the synthesizer's snippets (it has the brief in context).
-        # Fall back to the step-1 sources if Gemini drops the array.
-        "sources": [s.model_dump() for s in parsed.sources] if parsed.sources else sources,
+        "icon_symbol": metadata["icon_symbol"],
+        "category": metadata["category"],
+        # Step 1's grounding metadata already gives us
+        # {title=hostname, url, snippet=""} — that's all iOS needs to
+        # render a clickable source link. No descriptive snippet
+        # generation: the URL is the contract.
+        "sources": sources,
     }
     step_rows = []
-    for s in parsed.steps[:15]:
+    for idx, s in enumerate(parsed.steps[:15], start=1):
         step_rows.append({
             "step_number": s.step_number,
             "title": s.title,
             "description": s.description,
-            "timestamp_start": s.timestamp_start,
-            "timestamp_end": s.timestamp_end,
+            # Web procedures aren't backed by a video — synthesize
+            # placeholder timestamps server-side so Pro doesn't have to
+            # spend any output tokens on numbers nobody reads.
+            "timestamp_start": (idx - 1) * 30.0,
+            "timestamp_end": idx * 30.0,
             "tips": s.tips,
             "warnings": s.warnings,
             "completion_criteria": s.completion_criteria,
-            "error_criteria": s.error_criteria,
+            # error_criteria are heartbeat-path inputs that need a real
+            # source frame to anchor against. Web procedures have none,
+            # so we emit an empty list and the heartbeat path no-ops.
+            "error_criteria": [],
             # No clip and no PDF page; learner endpoints render text-only.
             "clip_url": None,
             "clip_status": "none",
@@ -327,17 +384,12 @@ async def _step2_synthesize(
     symptom: str,
     diagnostic_summary: str,
     research_text: str,
-    sources: list[dict],
-) -> GeminiProcedureOutput | None:
-    sources_block = "\n".join(
-        f"{i}. {s['title']} — {s['url']}" for i, s in enumerate(sources, start=1)
-    )
+) -> GeminiWebProcedureOutput | None:
     user_text = _STEP2_USER.format(
         product_name=product_name,
         symptom=symptom,
         diagnostic_summary=diagnostic_summary or "(no diagnostic summary provided)",
         research_text=research_text,
-        sources_block=sources_block,
     )
     contents = [types.Content(parts=[types.Part.from_text(text=user_text)])]
 
@@ -348,7 +400,14 @@ async def _step2_synthesize(
             config=types.GenerateContentConfig(
                 system_instruction=_STEP2_SYSTEM,
                 response_mime_type="application/json",
-                response_schema=GeminiProcedureOutput,
+                response_schema=GeminiWebProcedureOutput,
+                # See STEP2_THINKING_BUDGET / STEP2_TEMPERATURE comments
+                # at the top of the module — the headline latency knobs
+                # for 2.5 Pro structured synthesis.
+                thinking_config=types.ThinkingConfig(
+                    thinking_budget=STEP2_THINKING_BUDGET,
+                ),
+                temperature=STEP2_TEMPERATURE,
                 http_options=types.HttpOptions(timeout=STEP_TIMEOUT_MS),
             ),
         )
@@ -369,7 +428,7 @@ async def _step2_synthesize(
         logger.warning("web_research step2: empty response")
         return None
     try:
-        return GeminiProcedureOutput.model_validate_json(text)
+        return GeminiWebProcedureOutput.model_validate_json(text)
     except Exception as exc:
         logger.exception("web_research step2: failed to parse procedure JSON: %s", exc)
         return None

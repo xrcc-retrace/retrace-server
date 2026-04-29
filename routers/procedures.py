@@ -2,7 +2,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from config import CLIPS_DIR
@@ -35,19 +35,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["procedures"])
 
 
+# iOS's URLCache silently returns stale data under the
+# `.returnCacheDataElseLoad` cache policy that ProcedureAPIService uses by
+# default — see dat-ios-test ProcedureAPIService.swift:24. New uploads
+# wouldn't appear in the workflow list until a forceRefresh fired.
+# `no-store` on the response prevents URLCache from holding the entry at
+# all, so every fetch hits the network. Cheap on the server side
+# (procedures list is just a SQLite SELECT) and removes the staleness
+# class of bugs without depending on iOS pull-to-refresh hygiene.
+_NO_STORE = {"Cache-Control": "no-store, no-cache, must-revalidate"}
+
+
 @router.get("/procedures/{procedure_id}")
 async def get_procedure_endpoint(procedure_id: str):
     """Retrieve a generated procedure by ID."""
     proc = get_procedure(procedure_id)
     if not proc:
         raise HTTPException(404, "Procedure not found")
-    return proc
+    return JSONResponse(content=proc, headers=_NO_STORE)
 
 
 @router.get("/procedures")
 async def list_procedures_endpoint():
     """List all generated procedures."""
-    return list_procedures()
+    return JSONResponse(content=list_procedures(), headers=_NO_STORE)
 
 
 @router.delete("/procedures/{procedure_id}")

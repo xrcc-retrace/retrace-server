@@ -100,10 +100,15 @@ async def tool_call(session_id: str, req: ToolCallRequest):
     if not session or session.get("session_type") != "troubleshoot":
         raise HTTPException(404, "Diagnostic session not found")
 
-    # Dispatch runs synchronously but some handlers kick off background work
-    # (Gemini ranking, PDF ingest). The shared dispatcher key is
-    # (session_type, tool_name), so this routes to the troubleshoot handlers.
-    result = shared_session.handle_tool_call(session_id, req.tool_name, req.arguments)
+    # Dispatch runs synchronously and some handlers (web_search_for_fix in
+    # particular) block for ~30-40 s on Gemini calls. Run on a thread so
+    # the event loop stays free to serve concurrent /state polls — that
+    # is what surfaces web_search_progress to iOS while the call runs.
+    # The shared dispatcher key is (session_type, tool_name), so this
+    # routes to the troubleshoot handlers.
+    result = await asyncio.to_thread(
+        shared_session.handle_tool_call, session_id, req.tool_name, req.arguments
+    )
     return ToolCallResponse(result=result)
 
 
@@ -127,6 +132,7 @@ async def session_state(session_id: str):
         handoff_target=session.get("handoff_target"),
         handoff_learner_session_id=session.get("handoff_learner_session_id"),
         diagnostic_log=session.get("diagnostic_log", []),
+        web_search_progress=session.get("web_search_progress"),
     )
 
 

@@ -27,6 +27,16 @@ from services.troubleshoot import web_research
 
 logger = logging.getLogger(__name__)
 
+# Wall-clock budget for the whole web_search_for_fix tool call (step 1 +
+# step 2 + parallel pick_metadata, end to end). Step-level timeouts are
+# 60 s each in web_research.py, so the worst case without an outer
+# bound would be ~2 min — too long to leave the user hanging. After
+# this budget, we surface no_fix_found to Gemini Live so it tells the
+# user we couldn't find a fix; the phase progress block records
+# `phase="timeout"` so iOS / telemetry can distinguish it from a
+# genuine no-fix-found.
+WEB_SEARCH_TIMEOUT_S = 45.0
+
 
 def _handle_identify_product(session_id: str, args: dict) -> dict:
     query = (args.get("query") or "").strip()
@@ -118,6 +128,9 @@ def _handle_web_search_for_fix(session_id: str, args: dict) -> dict:
     tool call blocks for ~10-20s — Gemini Live should give the user a
     short status line ("Looking that up — give me a sec") before the call
     so the silence isn't awkward.
+
+    Phase progress is written to `session["web_search_progress"]` as the
+    pipeline advances; iOS polls /state and renders UI off it.
     """
     product_name = (args.get("product_name") or "").strip()
     symptom = (args.get("symptom") or "").strip()
@@ -130,16 +143,58 @@ def _handle_web_search_for_fix(session_id: str, args: dict) -> dict:
         ts_session.log_tool_call(session_id, "web_search_for_fix", args, err)
         return err
 
+    # Seed the progress block so the very next /state poll reflects
+    # `searching_web` even before research_and_extract gets to its own
+    # _emit() call.
+    ts_session.init_web_search_progress(session_id)
+
+    def _on_phase(phase: str, extra: dict) -> None:
+        ts_session.update_web_search_progress(session_id, phase, **extra)
+
     try:
         result_obj = _run_coro(
-            web_research.research_and_extract(
-                product_name=product_name,
-                symptom=symptom,
-                diagnostic_summary=diagnostic_summary,
+            asyncio.wait_for(
+                web_research.research_and_extract(
+                    product_name=product_name,
+                    symptom=symptom,
+                    diagnostic_summary=diagnostic_summary,
+                    on_phase=_on_phase,
+                ),
+                timeout=WEB_SEARCH_TIMEOUT_S,
             )
         )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "web_search_for_fix: timed out after %.1fs (session=%s product=%r symptom=%r)",
+            WEB_SEARCH_TIMEOUT_S, session_id, product_name, symptom,
+        )
+        ts_session.update_web_search_progress(
+            session_id,
+            "timeout",
+            error_message=f"timeout after {WEB_SEARCH_TIMEOUT_S:.0f}s",
+        )
+        # Surface as no_fix_found to Gemini Live so the spoken response is
+        # the same "we couldn't find a fix" message — the user gets a
+        # clean handoff to "contact a service tech." The distinction
+        # between a genuine no_fix_found and a timeout lives in the
+        # session's web_search_progress.phase field for iOS / telemetry.
+        timeout_result = {
+            "status": "no_fix_found",
+            "message": (
+                "I searched the web but couldn't pull a fix together in time. "
+                "Tell the user we don't have a procedure for this and "
+                "suggest they contact a service tech."
+            ),
+        }
+        ts_session.log_tool_call(session_id, "web_search_for_fix", args, timeout_result)
+        return timeout_result
     except Exception as exc:
         logger.exception("web_search_for_fix: research failed: %s", exc)
+        ts_session.update_web_search_progress(
+            session_id,
+            "error",
+            error_message=f"{type(exc).__name__}: {str(exc)[:200]}",
+        )
         err = {
             "status": "error",
             "error": f"{type(exc).__name__}: {str(exc)[:200]}",
@@ -152,6 +207,7 @@ def _handle_web_search_for_fix(session_id: str, args: dict) -> dict:
         return err
 
     if result_obj is None:
+        ts_session.update_web_search_progress(session_id, "no_fix_found")
         no_fix = {
             "status": "no_fix_found",
             "message": (
@@ -169,7 +225,12 @@ def _handle_web_search_for_fix(session_id: str, args: dict) -> dict:
     # `source_video` is NOT NULL in the schema. Use a self-documenting URI
     # so anyone inspecting the row knows this came from the web flow.
     source_video = f"web-search://{symptom}"
-    create_procedure_placeholder(procedure_id, source_video=source_video, created_at=created_at)
+    create_procedure_placeholder(
+        procedure_id,
+        source_video=source_video,
+        created_at=created_at,
+        source_type="web",
+    )
 
     procedure_row = {**result_obj.procedure, "id": procedure_id}
     save_procedure(procedure_row, result_obj.steps)
@@ -179,6 +240,12 @@ def _handle_web_search_for_fix(session_id: str, args: dict) -> dict:
         sess["generated_procedure_id"] = procedure_id
 
     sources_count = len(result_obj.procedure.get("sources") or [])
+    ts_session.update_web_search_progress(
+        session_id,
+        "complete",
+        procedure_id=procedure_id,
+        source_count=sources_count,
+    )
     result = {
         "status": "ok",
         "procedure_id": procedure_id,
