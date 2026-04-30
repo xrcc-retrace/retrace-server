@@ -9,7 +9,7 @@
 The FastAPI backend for **Retrace**, an AI coaching system built for the **XRCC Berlin 2026** hackathon.
 The control plane that turns expert videos into structured procedures, mints ephemeral Gemini Live tokens for the phone, and dispatches tool calls during a coaching session.
 
-[**▶ Watch the demo**](https://www.youtube.com/watch?v=gMlgZh2H5eE) &nbsp;·&nbsp; [**🌐 Live API**](https://retracexrcc.duckdns.org/health) &nbsp;·&nbsp; [**🏛 Org overview**](https://github.com/xrcc-retrace) &nbsp;·&nbsp; [**📱 iOS repo**](https://github.com/xrcc-retrace/dat-ios-test)
+[**▶ Watch the demo**](https://www.youtube.com/watch?v=azK-CLpyRQg) &nbsp;·&nbsp; [**🎬 Full walkthrough video**](https://www.youtube.com/watch?v=CqUj5HtP0QE) &nbsp;·&nbsp; [**🌐 Live API**](https://retracexrcc.duckdns.org/health) &nbsp;·&nbsp; [**🏛 Org overview**](https://github.com/xrcc-retrace) &nbsp;·&nbsp; [**📱 iOS repo**](https://github.com/xrcc-retrace/dat-ios-test)
 
 </div>
 
