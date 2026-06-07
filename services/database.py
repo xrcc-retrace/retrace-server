@@ -66,6 +66,10 @@ def init_db():
         # Online sources cited by troubleshoot web-search flow.
         # JSON-serialized list of {title, url, snippet}; '[]' on legacy rows.
         ("sources", "TEXT NOT NULL DEFAULT '[]'"),
+        # Optional reference image (e.g. a diagram) shown on the learner's
+        # phone for this procedure. Served from /api/reference_images/.
+        # NULL on rows without one.
+        ("reference_image_url", "TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE procedures ADD COLUMN {col} {definition}")
@@ -120,6 +124,20 @@ def update_procedure_status(procedure_id: str, status: str, error_message: str |
             (status, error_message, procedure_id),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def set_procedure_reference_image(procedure_id: str, url: str) -> bool:
+    """Attach a reference image URL to a procedure. Returns True if found."""
+    conn = _get_conn()
+    try:
+        cur = conn.execute(
+            "UPDATE procedures SET reference_image_url = ? WHERE id = ?",
+            (url, procedure_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 
@@ -236,6 +254,7 @@ def list_procedures() -> list[dict]:
             SELECT p.id, p.title, p.description, p.total_duration, p.created_at,
                    p.status, p.error_message, p.source_type,
                    p.icon_symbol, p.icon_emoji, p.category, p.sources,
+                   p.reference_image_url,
                    COUNT(s.id) as step_count
             FROM procedures p
             LEFT JOIN steps s ON s.procedure_id = p.id

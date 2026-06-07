@@ -7,13 +7,15 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from config import GEMINI_API_KEY, CLIPS_DIR, UPLOAD_DIR
+from config import GEMINI_API_KEY, CLIPS_DIR, UPLOAD_DIR, REFERENCE_IMAGES_DIR
 from models.procedure import ProcedureStep
 from services.gemini_processor import process_expert_video
 from services.clip_extractor import extract_clips
 from services.database import (
     create_procedure_placeholder,
+    get_procedure,
     save_procedure,
+    set_procedure_reference_image,
     update_procedure_status,
 )
 from services.video_probe import probe_duration
@@ -58,6 +60,31 @@ async def upload_expert_video(video: UploadFile = File(...)):
     asyncio.create_task(_process_video(procedure_id, video_path, actual_duration))
 
     return {"id": procedure_id, "status": "processing"}
+
+
+@router.post("/procedures/{procedure_id}/reference-image")
+async def upload_reference_image(procedure_id: str, file: UploadFile = File(...)):
+    """Attach a reference image (e.g. a diagram) to a procedure.
+
+    The image is shown on the learner's phone during coaching. Saved as
+    {procedure_id}.{ext} and served from /api/reference_images/.
+    """
+    if get_procedure(procedure_id) is None:
+        raise HTTPException(status_code=404, detail="Procedure not found")
+
+    ext = Path(file.filename).suffix.lstrip(".") if file.filename else ""
+    if ext.lower() not in {"jpg", "jpeg", "png"}:
+        raise HTTPException(status_code=400, detail="Unsupported file type")
+
+    image_path = REFERENCE_IMAGES_DIR / f"{procedure_id}.{ext}"
+    logger.info("Saving reference image to %s", image_path)
+    with open(image_path, "wb") as out:
+        await asyncio.to_thread(shutil.copyfileobj, file.file, out)
+
+    url = f"/api/reference_images/{procedure_id}.{ext}"
+    set_procedure_reference_image(procedure_id, url)
+
+    return {"reference_image_url": url}
 
 
 async def _process_video(procedure_id: str, video_path: Path, actual_duration: float):
