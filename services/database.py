@@ -128,8 +128,10 @@ def update_procedure_status(procedure_id: str, status: str, error_message: str |
         conn.close()
 
 
-def set_procedure_reference_image(procedure_id: str, url: str) -> bool:
-    """Attach a reference image URL to a procedure. Returns True if found."""
+def set_procedure_reference_image(procedure_id: str, url: str | None) -> bool:
+    """Attach a reference image URL to a procedure (or, with url=None, clear it).
+
+    Returns True if found."""
     conn = _get_conn()
     try:
         cur = conn.execute(

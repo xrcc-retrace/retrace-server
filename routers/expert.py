@@ -4,6 +4,7 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
@@ -81,10 +82,36 @@ async def upload_reference_image(procedure_id: str, file: UploadFile = File(...)
     with open(image_path, "wb") as out:
         await asyncio.to_thread(shutil.copyfileobj, file.file, out)
 
-    url = f"/api/reference_images/{procedure_id}.{ext}"
+    # Reference images always live at the same path ({id}.{ext}), so a replace
+    # produces a byte-identical URL. iOS (and any URL-keyed cache) would then
+    # serve the stale image. Append a version token from the file's mtime so
+    # each upload yields a unique URL → guaranteed cache miss on replace. The
+    # file-serving route ignores the query string.
+    version = int(image_path.stat().st_mtime)
+    url = f"/api/reference_images/{procedure_id}.{ext}?v={version}"
     set_procedure_reference_image(procedure_id, url)
 
     return {"reference_image_url": url}
+
+
+@router.delete("/procedures/{procedure_id}/reference-image")
+async def delete_reference_image(procedure_id: str):
+    """Remove a procedure's reference image (clears the DB field + deletes the file)."""
+    proc = get_procedure(procedure_id)
+    if proc is None:
+        raise HTTPException(status_code=404, detail="Procedure not found")
+
+    url = proc.get("reference_image_url")
+    if url:
+        try:
+            # Strip any "?v=" cache-busting query before deriving the filename.
+            filename = Path(urlparse(url).path).name
+            (REFERENCE_IMAGES_DIR / filename).unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Failed to delete reference image file for %s", procedure_id)
+
+    set_procedure_reference_image(procedure_id, None)
+    return {"reference_image_url": None}
 
 
 async def _process_video(procedure_id: str, video_path: Path, actual_duration: float):
