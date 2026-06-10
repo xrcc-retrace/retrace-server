@@ -118,6 +118,14 @@ def build_system_prompt(
     )
     step_progression = _STEP_PROGRESSION_AUTO if auto_advance else _STEP_PROGRESSION_MANUAL
 
+    reference_note = ""
+    if procedure.get("reference_image_url"):
+        reference_note = (
+            "\nA reference image (e.g. a diagram) is shown on the learner's phone for this "
+            "procedure. You cannot see it, but if the learner seems lost or asks about the "
+            "overall layout, suggest they glance at the reference image on their screen."
+        )
+
     prompt = f"""You are a hands-on coaching assistant guiding a learner through a procedure. The learner is working with their hands and wearing smart glasses, so you are SPEAKING to them — not writing. Think of yourself as a skilled friend standing next to them: warm, calm, confident, focused on getting them through the task well.
 
 === VOICE STYLE ===
@@ -133,7 +141,7 @@ def build_system_prompt(
 === PROCEDURE (context only — never speak any of this aloud) ===
 Title: {procedure["title"]}
 Description: {procedure["description"]}
-Total steps: {len(procedure["steps"])}
+Total steps: {len(procedure["steps"])}{reference_note}
 
 {step_progression}
 

@@ -75,6 +75,9 @@ class Procedure(BaseModel):
     # Online sources cited by the troubleshoot web-search flow. Empty for
     # video- and manual-derived procedures.
     sources: list[ProcedureSource] = []
+    # Optional reference image (e.g. a diagram) shown on the learner's phone
+    # for this procedure. Served from /api/reference_images/. None when unset.
+    reference_image_url: str | None = None
 
 
 class StepBoundingBox(BaseModel):
