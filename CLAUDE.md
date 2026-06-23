@@ -19,7 +19,7 @@ Glasses / iPhone  ↔  Phone (iOS)  ↔  Server (this repo)
                       Gemini Live API
 ```
 
-The iOS companion app lives in a separate repo (`dat-ios-test`). This server also hosts a static SOP review dashboard at `/` for inspecting and editing procedures without the phone.
+The iOS companion app lives in a separate repo (`retrace-ios`). This server also hosts a static SOP review dashboard at `/` for inspecting and editing procedures without the phone.
 
 ## Prerequisites
 
@@ -121,7 +121,7 @@ iOS app <=== direct Gemini Live WebSocket ===> Gemini
 - No procedure is required to start a troubleshoot session. The phase machine progresses `identify → diagnose → fetching-manual → ready-to-coach` (legacy state names; `fetching-manual` now covers `web_search_for_fix`).
 - `web_search_for_fix` replaced the old `fetch_manual` PDF flow — the troubleshoot path no longer ingests PDFs at runtime. PDF ingest still exists, but as an expert-side flow under `/api/expert/manuals/*`.
 - `handoff_to_learner` (renamed from `handoff_to_coaching`) promotes the chosen procedure into a normal learner session and returns the full `SessionStartResponse` so the iOS client can open a coaching socket without a second round-trip.
-- A startup fixture loader ingests a bundled Levoit LV600HH manual on a fresh DB so the demo library isn't empty.
+- A startup fixture loader ingests a bundled Nespresso Vertuo Next descaling manual on a fresh DB so the demo library isn't empty.
 
 ### Bonjour discovery
 
@@ -135,13 +135,13 @@ main-local-server-test/
 ├── config.py                  # Paths, GEMINI_API_KEY, GEMINI_MODEL, FFMPEG_PATH (auto-creates data dirs on import)
 ├── requirements.txt
 ├── models/
-│   ├── procedure.py           # GeminiProcedureOutput (structured-output schema) + Procedure / ProcedureStep (API models, with completion_criteria and clip_status). source_type ∈ {video, manual, web}
+│   ├── procedure.py           # Per-flow Gemini structured-output schemas (GeminiVideoProcedureOutput / GeminiManualProcedureOutput / GeminiWebProcedureOutput off a shared _BaseProcedureStep) + Procedure / ProcedureStep (API models, with completion_criteria, error_criteria, clip_status, icon_symbol/icon_emoji/category, sources). Plus ProcedureSource (cited web URLs) and StepBoundingBox. source_type ∈ {video, manual, web}
 │   ├── session.py             # Pydantic models for session start/state, StepCompletion (method: "visual" | "verbal"), tool call req/res, ephemeral token response
 │   └── troubleshoot.py        # Troubleshoot-mode request/response models (session start, state, handoff, manual upload/status, identified product, candidate procedure, diagnostic log entry)
 ├── routers/
 │   ├── expert.py              # POST /api/expert/upload — async background pipeline, timestamp clamping, per-step status bookkeeping
 │   ├── expert_manuals.py      # POST /api/expert/manuals/upload + GET /api/expert/manuals/{id} (PDF → SOP) + GET /api/manual_images/{procedure_id}/step_{n}.png (rendered manual page used as the step "clip")
-│   ├── icons.py               # GET /{prefix}/{name}.png — Iconify icons rendered as white-on-transparent PNGs, disk-cached
+│   ├── icons.py               # GET /api/icons/{prefix}/{name}.png — Iconify icons rendered as white-on-transparent PNGs, disk-cached
 │   ├── learner.py             # Voices list + session lifecycle (start, tool-call forwarding, state, context summary, token refresh with optional ?handle=)
 │   ├── procedures.py          # CRUD for procedures / steps + clip serving
 │   └── troubleshoot.py        # Mode-parallel to learner. Importing this router imports services.troubleshoot, which registers its tool handlers with the shared dispatcher.
@@ -151,15 +151,16 @@ main-local-server-test/
 │   ├── video_probe.py         # ffprobe wrapper — authoritative duration read on upload
 │   ├── database.py            # SQLite (WAL). Tables: procedures, steps. JSON-serialized tips/warnings. Lightweight ALTER-TABLE migrations for new columns (source_type on procedures, etc.).
 │   ├── session.py             # In-memory session store, step advancement with method tagging, context-summary builder, tool-call dispatcher (shared by learner + troubleshoot; handlers register at import time)
-│   ├── prompt_builder.py      # Current-step-only system prompt (auto-advance = visual detection; manual = verbal confirmation). Tool definitions + Gemini config.
+│   ├── prompt_builder.py      # Current-step-only system prompt (auto-advance = visual detection; manual = verbal confirmation). Embeds the step's error_criteria into a "VISUAL MONITORING (heartbeat + silence protocol)" block so the model proactively interjects on a detected mistake. Tool definitions + Gemini config. _ERROR_CRITERIA_OVERRIDES is a legacy per-step fallback used only when step["error_criteria"] is empty.
 │   ├── ephemeral_token.py     # Mints v1alpha auth_tokens locked to model + system prompt + tools + voice + transcription + compression + resumption handle
 │   ├── procedure_search.py    # Gemini Flash-ranked search over the existing procedure library by product + symptom (no separate index)
+│   ├── metadata_picker.py     # Flash (gemini-2.5-flash, thinking_budget=0) call that picks a procedure's icon_symbol + category from a closed enum. Used by all four generation flows (expert video, expert PDF, troubleshoot PDF, web search).
 │   ├── manual_ingest.py       # PDF → structured SOP via Gemini Files API. Shared by expert + troubleshoot via mode={"expert","troubleshoot"}. Renders source_page → PNG in MANUAL_IMAGES_DIR; writes path into step.clip_url so manual procedures plug into existing clip endpoints unchanged.
 │   ├── manual_prompts.py      # Mode-specific Gemini prompts for manual_ingest
 │   ├── pdf_images.py          # PDF page → PNG rasterization
 │   ├── icon_renderer.py       # Iconify SVG → white-on-transparent PNG via cairosvg, disk-cached by Iconify ID
 │   ├── voice_commands.py      # Loads voice_commands.yaml at import; prompt builders look up phrasing by command id
-│   ├── fixtures.py            # Startup loader that ingests bundled manual fixtures (e.g. Levoit LV600HH) on a fresh DB. Scheduled non-blocking from main.py's lifespan.
+│   ├── fixtures.py            # Startup loader that ingests the bundled Nespresso Vertuo Next descaling manual on a fresh DB. Scheduled non-blocking from main.py's lifespan.
 │   └── troubleshoot/
 │       ├── session.py         # In-memory troubleshoot store, phase transitions (identify → diagnose → fetching-manual → ready-to-coach), diagnostic log
 │       ├── prompt.py          # Troubleshoot-specific system prompt
@@ -169,7 +170,11 @@ main-local-server-test/
 │   ├── index.html             # SOP review dashboard
 │   └── voice_previews/        # Pre-generated WAV previews of Gemini voices
 ├── scripts/
-│   └── generate_voice_previews.py   # Regenerate the WAV previews
+│   ├── generate_voice_previews.py   # Regenerate the WAV previews
+│   ├── backfill_error_criteria.py   # Backfill steps.error_criteria from prompt_builder._ERROR_CRITERIA_OVERRIDES
+│   ├── probe_interject_heartbeat.py # Empirical probe for the "Interject" heartbeat feature on 3.1 Live
+│   ├── probe_live_tool_config.py    # Raw-WebSocket probe of tool_config.mode=ANY (the SDK config object forbids it)
+│   └── prompts/                     # Prompt fixtures for the interject probes (interject_silence_v1/v2/v3.txt, interject_trigger.txt)
 ├── gemini_live_playground/    # Interactive REPL (`python -m gemini_live_playground`) for behavioral tuning against the production prompt/tools/config. Text I/O via output-transcription stream; tool calls dispatch in-process against services.session. No FastAPI server required. Scenarios in scenarios/*.yaml.
 ├── reprocess_clips.py         # Re-run clip extraction for completed procedures without hitting Gemini again (after tweaking ffmpeg flags)
 ├── reset_data.py              # Wipe all user-generated data (DB rows, uploads, clips) — interactive by default, --yes / --dry-run / --force flags. Preserves code, .venv, .env, voice_previews.
@@ -185,9 +190,10 @@ main-local-server-test/
 ├── probe_gemini_live_system_instruction.py  # Canary probe: verify Gemini Live honors the system_instruction baked into ephemeral tokens (motivated by the open Google Developers forum report)
 ├── probe_tool_reliability.py  # HIT/MISS rate for advance_step tool calls over many trials — decide if tool calling is reliable enough or if we need the out-of-band transcript fallback
 ├── probe_diagnostic_reliability.py  # Analog of probe_tool_reliability.py for troubleshoot-mode tool calls (identify_product, confirm_identification, search_procedures, web_search_for_fix, handoff_to_learner)
-├── fixtures/                  # Bundled manuals loaded on first start when absent from the DB (e.g. levoit_lv600hh_manual.pdf)
+├── fixtures/                  # Bundled manuals; only nespresso_vertuo_next_descaling.pdf is wired into the startup loader (levoit_lv600hh_manual.pdf also present but unused)
 ├── data/
-│   ├── clips/{procedure_id}/step_{n}.mp4
+│   ├── clips/{procedure_id}/step_{n}.mp4   # plus an on-demand step_{n}.jpg first-frame poster cached beside each clip
+│   ├── manual_images/{procedure_id}/step_{n}.png   # MANUAL_IMAGES_DIR — rendered manual-page PNGs for manual-sourced procedures
 │   └── retrace.db             # SQLite (WAL mode)
 └── uploads/                   # Source expert videos ({uuid}.{ext})
 ```
@@ -212,11 +218,11 @@ main-local-server-test/
 | `GET` | `/api/expert/manuals/{manual_id}` | Poll ingest status + (when ready) the resulting `procedure_id`. |
 | `GET` | `/api/manual_images/{procedure_id}/step_{n}.png` | Rendered manual-page PNG used in place of an MP4 clip for manual-sourced procedures. |
 
-### Icons — `/{prefix}/{name}.png`
+### Icons — `/api/icons/{prefix}/{name}.png`
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/{prefix}/{name}.png` | Iconify icon (e.g. `/lucide/refrigerator.png`) rasterized to a white-on-transparent PNG via `cairosvg`, cached on disk. |
+| `GET` | `/api/icons/{prefix}/{name}.png` | Iconify icon (e.g. `/api/icons/lucide/refrigerator.png`) rasterized to a white-on-transparent PNG via `cairosvg`, cached on disk. A miss serves a fallback icon; a malformed prefix/name returns `400`. |
 
 ### Procedures — `/api/procedures`
 
@@ -228,13 +234,14 @@ main-local-server-test/
 | `PUT` | `/api/procedures/{id}/steps/{n}` | Update a single step's fields (`title`, `description`, `tips`, `warnings`, `timestamp_start`, `timestamp_end`). |
 | `DELETE` | `/api/procedures/{id}` | Delete procedure + cascade steps. |
 | `GET` | `/api/clips/{id}/step_{n}.mp4` | Per-step clip (H.264+AAC, faststart). |
+| `GET` | `/api/clips/{id}/step_{n}.jpg` | On-demand, disk-cached first-frame JPEG poster of the step clip (for the lens-side `MWDATDisplay.Image` thumbnail, which can't take video frames). |
 
 ### Learner — `/api/learner`
 
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/learner/voices` | Server-authoritative list of Gemini Live voices (`{name, description, preview_url}`). iOS reads this instead of hardcoding. |
-| `POST` | `/api/learner/session/start` | Body: `{procedure_id, auto_advance?, voice?}`. Returns session id, full procedure, assembled (current-step-only) system prompt, tool definitions, Gemini config, ephemeral token. |
+| `POST` | `/api/learner/session/start` | Body: `{procedure_id, auto_advance?, active_monitoring?, voice?}`. Returns session id, full procedure, assembled (current-step-only) system prompt, tool definitions, Gemini config, ephemeral token. `active_monitoring` (default True) is the master switch for proactive visual monitoring — when False the phone sends no `[check]` heartbeat and the model is fully reactive (no visual interjection, no visual advance, verbal-only). `auto_advance` (default True) gates visual step advance, effective only when `active_monitoring` is also True. **The iOS app collapses these into one Active/Passive toggle and always sends them equal**; the "active + manual" middle state is reachable only via the playground/probes (`--manual`). |
 | `POST` | `/api/learner/session/{id}/token[?handle=...]` | Mint a fresh ephemeral token. Pass the latest `sessionResumptionUpdate.new_handle` as `?handle=` to bind the new token to the prior session — the next WebSocket continues with compressed context intact. The regenerated system prompt re-anchors on the session's current step, so a resumed socket doesn't reopen on step 1. |
 | `POST` | `/api/learner/session/{id}/tool-call` | Body: `{tool_name, arguments}`. Executes the handler and returns `{result: {...}}`. The phone unwraps `result` and hands it back to Gemini via `toolResponse`. |
 | `GET` | `/api/learner/session/{id}/state` | Current step, status, step history (each entry includes `method: "visual" | "verbal"`). |
@@ -261,10 +268,10 @@ These settings are locked into every ephemeral token so the phone can't change t
 
 - **Model:** `gemini-3.1-flash-live-preview` (released 2026-03-26, public preview) — verified 2026-04-17 via the production ephemeral-token + `BidiGenerateContentConstrained.v1alpha` path. Supports video input, tools, context compression, session resumption, in/out transcription. Override via `RETRACE_LIVE_MODEL` env var for fast rollback to 2.5 native-audio. `turn_coverage` default flips to `TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO` on 3.1, so silent-period video frames now reach the model.
 - **Voice:** server-authoritative list (Puck / Charon / Kore / Fenrir / Aoede / Zephyr / Enceladus / Leda). Default `Puck`.
-- **Context compression:** `trigger_tokens=100_000 → target_tokens=40_000`. At ~0.5 fps video + `MEDIA_RESOLUTION_LOW`, first compression cycle fires around 25 min, then every ~12 min.
+- **Context compression:** `trigger_tokens=100_000 → target_tokens=40_000`. (The "~25 min then ~12 min" cadence in older notes was derived under `MEDIA_RESOLUTION_LOW`; the config now runs `MEDIA_RESOLUTION_HIGH`, so per-frame token burn is higher and compression fires sooner — treat the old minute figures as unverified.)
 - **Session resumption:** Gemini periodically emits `sessionResumptionUpdate.new_handle`. iOS persists the latest; on reconnect, `POST /session/{id}/token?handle=...` bakes it into `SessionResumptionConfig` so the next WebSocket continues where the prior one left off.
 - **Transcription:** both input (learner) and output (AI reply) audio are transcribed so the iOS activity feed renders text.
-- **Media resolution:** `MEDIA_RESOLUTION_LOW` keeps video token burn at ~33 tok/s.
+- **Media resolution:** `MEDIA_RESOLUTION_HIGH` (`services/ephemeral_token.py`) — favors visual-verification detail over token thrift. Raising/lowering this directly moves the compression cadence.
 - **Token uses:** `uses=1`. Matches documented single-use semantics. The iOS client mints a fresh token for every connection attempt (initial + retry + resumption), so this is sufficient.
 - **Expiry format:** ISO8601 with **millisecond** precision (`timespec="milliseconds"`). iOS's `ISO8601DateFormatter.withFractionalSeconds` caps at 3 fractional digits — Python's default 6-digit microsecond output silently fails to parse and forces spurious refreshes.
 
@@ -273,8 +280,8 @@ These settings are locked into every ephemeral token so the phone can't change t
 - `uploads/` — source expert videos, named `{uuid}.{ext}`. Keep the original extension so ffprobe reads the container correctly.
 - `data/clips/{procedure_id}/step_{n}.mp4` — per-step clips.
 - `data/retrace.db` — SQLite (WAL). Two tables:
-  - `procedures(id, title, description, total_duration, source_video, created_at, status, error_message)`
-  - `steps(id, procedure_id, step_number, title, description, timestamp_start, timestamp_end, tips, warnings, completion_criteria, clip_url, clip_status)`
+  - `procedures(id, title, description, total_duration, source_video, created_at, status, error_message, source_type, icon_symbol, icon_emoji, category, sources)` — the last five are added via lightweight ALTER-TABLE migrations.
+  - `steps(id, procedure_id, step_number, title, description, timestamp_start, timestamp_end, tips, warnings, completion_criteria, error_criteria, clip_url, clip_status)` — `error_criteria` is a JSON array of observable error states (see Interject below).
   - `tips` and `warnings` are JSON-encoded arrays.
   - `UNIQUE(procedure_id, step_number)` — reorder logic uses a two-pass negative-then-positive trick to avoid unique-constraint violations.
 - Sessions are **in-memory only** (a `dict` in `services/session.py`). They die with the process.
@@ -303,7 +310,7 @@ Sample videos live under `test_data/`. `test_live_session.py` drives a full Live
 ## Critical Architecture Decisions
 
 1. **Voice + video go direct**, phone → Gemini Live. Routing them through this server adds 100-200 ms per exchange and breaks conversational feel. The server is strictly the control plane.
-2. **Visual verification runs inline in Gemini Live**, not as a separate server-side pass. The model sees the camera feed alongside audio, watches for each step's `completion_criteria`, and fires `advance_step` via function calling. `auto_advance=True` tags completions as `method="visual"`; manual mode is `"verbal"`. A Gemini 2.5 Pro REST clip-to-clip fallback is deferred unless inline detection proves unreliable.
+2. **Visual verification runs inline in Gemini Live**, not as a separate server-side pass. The model sees the camera feed alongside audio, watches for each step's `completion_criteria`, and fires `advance_step` via function calling. `advance_step` carries a required `trigger` arg (`"verbal"` | `"visual"`); the dispatcher tags `method` from it and **enforces** the toggles — a `"visual"` advance is refused (`status="ignored"`) unless the session is both `active_monitoring` and `auto_advance`. So "auto-advance off" can't be overridden by the model visually advancing. A Gemini 2.5 Pro REST clip-to-clip fallback is deferred unless inline detection proves unreliable.
 3. **Audio + video share one Live session.** Context compression + session resumption unlock indefinite duration. The "2-minute audio+video" Gemini limit is a context-fill limit, not a hard timer.
 4. **Current-step-only system prompt.** `build_system_prompt` embeds just the current step's details; future steps are delivered exclusively through `advance_step` tool responses. Prevents the model from narrating ahead. On resumption, the prompt is re-anchored on `session["current_step"]` so a reopened socket doesn't act like step 1.
 5. **Tool calling is the model↔server channel.** Gemini issues function calls; the phone intercepts, injects `session_id`, and forwards to `/tool-call`. Server handler result is returned to the phone wrapped as `{result: {...}}`; the phone unwraps before handing back to Gemini.
@@ -320,6 +327,10 @@ Design steps around what VLMs can actually detect:
 - **Unreliable:** Fine alignment, sub-millimeter changes, torque/fit.
 
 The `completion_criteria` string on each step is what Gemini Live uses to decide when to call `advance_step`. Write criteria that describe an **observable end-state**, not an action. The extraction prompt in `gemini_processor.py` explicitly asks Gemini to phrase completion criteria that way.
+
+**Proactive error interjection (Interject).** Each step also carries `error_criteria` — a JSON array of observable *wrong-state* descriptions. `prompt_builder.py` injects these into a "VISUAL MONITORING (heartbeat + silence protocol)" block so the model can interrupt the learner mid-step when it sees a mistake, not only when a step completes. The same VLM-detectability rules apply: phrase each error as a clearly visible state ("the cap is still on", "the tray is upside down"), not a subtle one. `error_criteria` is produced by Gemini 2.5 Pro at extraction time (and backfillable via `scripts/backfill_error_criteria.py`); empirical tuning lives in `scripts/probe_interject_heartbeat.py` + `scripts/prompts/`.
+
+**Procedure metadata.** `services/metadata_picker.py` makes a cheap Flash call (`thinking_budget=0`) at the end of every generation flow to pick an `icon_symbol` (Iconify id, served via `/api/icons/...`) and a `category` (closed `ProcedureCategory` enum) for the procedure.
 
 ## Gotchas
 

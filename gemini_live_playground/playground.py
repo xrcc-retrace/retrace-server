@@ -111,6 +111,7 @@ def _save_scenario(session: PlaygroundSession, name: str) -> Path:
     payload: dict = {
         "procedure_id": cfg.procedure_id,
         "auto_advance": cfg.auto_advance,
+        "active_monitoring": cfg.active_monitoring,
         "voice": cfg.voice,
     }
     overrides: dict = {}
@@ -186,6 +187,8 @@ def _build_config(args: argparse.Namespace) -> PlaygroundConfig:
         cfg.voice = args.voice
     if args.manual:
         cfg.auto_advance = False
+    if args.passive:
+        cfg.active_monitoring = False
     if args.text_modality:
         cfg.text_modality = True
     return cfg
@@ -200,6 +203,7 @@ def main() -> None:
     parser.add_argument("--procedure-id", help="Procedure UUID from data/retrace.db (overrides scenario)")
     parser.add_argument("--voice", help="Override voice (Puck, Charon, Kore, ...)")
     parser.add_argument("--manual", action="store_true", help="Force manual mode (auto_advance=False)")
+    parser.add_argument("--passive", action="store_true", help="Force passive mode (active_monitoring=False — no heartbeat / proactive monitoring)")
     parser.add_argument("--text-modality", action="store_true", help="Set response_modalities=['TEXT']")
     parser.add_argument("--replay", action="store_true", help="Run scripted_turns then exit (no REPL)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable INFO logging")

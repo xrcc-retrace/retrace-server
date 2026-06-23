@@ -70,6 +70,7 @@ class PromptOverrides:
 class PlaygroundConfig:
     procedure_id: str
     auto_advance: bool = True
+    active_monitoring: bool = True
     voice: str = "Puck"
     overrides: PromptOverrides = field(default_factory=PromptOverrides)
     scripted_turns: list[str] = field(default_factory=list)
@@ -94,6 +95,7 @@ def load_scenario(path: Path) -> PlaygroundConfig:
     return PlaygroundConfig(
         procedure_id=str(data["procedure_id"]),
         auto_advance=bool(data.get("auto_advance", True)),
+        active_monitoring=bool(data.get("active_monitoring", True)),
         voice=str(data.get("voice", "Puck")),
         overrides=overrides,
         scripted_turns=[str(t) for t in (data.get("scripted_turns") or [])],
@@ -247,6 +249,7 @@ class PlaygroundSession:
         session = create_session(
             self.cfg.procedure_id,
             auto_advance=self.cfg.auto_advance,
+            active_monitoring=self.cfg.active_monitoring,
             voice=self.cfg.voice,
         )
         if not session:
@@ -263,6 +266,7 @@ class PlaygroundSession:
             build_system_prompt(
                 proc,
                 auto_advance=self.cfg.auto_advance,
+                active_monitoring=self.cfg.active_monitoring,
                 current_step_number=session["current_step"],
             ),
             self.cfg.overrides,
@@ -278,6 +282,7 @@ class PlaygroundSession:
             "procedure_title": proc.get("title"),
             "voice": self.cfg.voice,
             "auto_advance": self.cfg.auto_advance,
+            "active_monitoring": self.cfg.active_monitoring,
             "text_modality": self.cfg.text_modality,
             "total_steps": session["total_steps"],
             "system_prompt": self.system_prompt,

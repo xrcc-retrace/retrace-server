@@ -6,6 +6,12 @@ from models.procedure import Procedure
 class SessionStartRequest(BaseModel):
     procedure_id: str
     auto_advance: bool = True
+    # Active monitoring (Active/Passive). When True the phone sends the ~0.5 Hz
+    # `[check]` heartbeat and the model proactively watches the feed (error
+    # interjection + — if auto_advance — visual step advance). When False the
+    # session is fully reactive: no heartbeat, no visual interjection, and
+    # advancement is verbal-only regardless of auto_advance.
+    active_monitoring: bool = True
     voice: str = "Puck"
     starting_step: int | None = None
 

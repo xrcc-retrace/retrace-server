@@ -17,9 +17,11 @@ logger = logging.getLogger(__name__)
 def _advance_step_description() -> str:
     examples = vc.format_utterance_examples("next_step")
     return (
-        "Call this the moment the learner finishes the current step — when they "
-        f"say {examples}, or when you visually confirm the completion criteria "
-        "are met. Call it on every step, including the very last one — always."
+        "Call this the moment the learner finishes the current step. Set `trigger` "
+        f"to 'verbal' if they told you they're done ({examples}), or 'visual' if you "
+        "detected the completion criteria from the camera. Follow the STEP "
+        "PROGRESSION rules in the system prompt for when each trigger is allowed. "
+        "Call it on every step, including the very last one — always."
     )
 
 
@@ -48,8 +50,19 @@ TOOL_DEFINITIONS = [
         "description": _advance_step_description(),
         "parameters": {
             "type": "object",
-            "properties": {},
-            "required": [],
+            "properties": {
+                "trigger": {
+                    "type": "string",
+                    "enum": ["verbal", "visual"],
+                    "description": (
+                        "'verbal' if the learner said they're done; 'visual' if you "
+                        "detected completion from the camera. A 'visual' advance is "
+                        "only accepted when active monitoring and auto-advance are "
+                        "both on — otherwise wait for the learner to say so."
+                    ),
+                },
+            },
+            "required": ["trigger"],
         },
     },
     {
@@ -96,6 +109,7 @@ GEMINI_CONFIG = {
 def build_system_prompt(
     procedure: dict,
     auto_advance: bool = True,
+    active_monitoring: bool = True,
     current_step_number: int = 1,
 ) -> str:
     """Build a Gemini Live system prompt for coaching a learner through a procedure.
@@ -117,6 +131,7 @@ def build_system_prompt(
         else ""
     )
     step_progression = _STEP_PROGRESSION_AUTO if auto_advance else _STEP_PROGRESSION_MANUAL
+    visual_monitoring = _visual_monitoring(auto_advance, active_monitoring)
 
     prompt = f"""You are a hands-on coaching assistant guiding a learner through a procedure. The learner is working with their hands and wearing smart glasses, so you are SPEAKING to them — not writing. Think of yourself as a skilled friend standing next to them: warm, calm, confident, focused on getting them through the task well.
 
@@ -158,30 +173,16 @@ Procedure completion (advance_step returned status="completed"): a slightly long
 
 Mistake interjection: short and urgent, then the fix. "Hold on — you're turning it the wrong way, go counter-clockwise."
 
-=== VISUAL MONITORING (heartbeat + silence protocol) ===
-You can see the learner's camera feed. The iOS client sends you a short internal marker — the exact string `[check]` — every few seconds while the learner is working silently. Treat `[check]` as an **internal diagnostic signal, not user speech**.
-
-On each `[check]`:
-- Silently compare the current camera frame to both the OBSERVABLE ERRORS list and the completion criteria inside the CURRENT STEP block.
-- If a listed OBSERVABLE ERROR is visible AND has persisted across multiple moments (not a fleeting frame), speak ONE short corrective sentence referring to what you see. Example shape: short, directive, no hedging.
-- If the step's completion criteria appear clearly met AND have persisted across multiple moments, call `advance_step`. `[check]` is the primary moment for visual advance — do not wait for the learner to say "done" if you can see the step is complete.
-- Otherwise, produce NO output at all. No audio, no text, no acknowledgement. A silent turn on `[check]` is the correct default — it means everything looks fine and the step is still in progress.
-
-Hard rules:
-- Never read the word `[check]` or the brackets out loud.
-- Never respond to `[check]` conversationally (no "sure, checking now", no "looks good", no "got it").
-- Never narrate the scene or invent details you do not clearly see — if you're not sure, stay silent.
-- Never comment on what the learner is doing correctly. Silence is the acknowledgement.
-
-Everything else (the learner's spoken questions, step completions, `advance_step` responses, barge-in) behaves normally. The silence rule applies only to the `[check]` path.
+{visual_monitoring}
 
 === CURRENT STEP ===
 {current_step_text}"""
 
     logger.info(
-        "Built system prompt for procedure '%s' (%d steps, auto_advance=%s, current_step=%d, %d chars)",
+        "Built system prompt for procedure '%s' (%d steps, auto_advance=%s, "
+        "active_monitoring=%s, current_step=%d, %d chars)",
         procedure["title"], len(procedure["steps"]), auto_advance,
-        current_step_number, len(prompt),
+        active_monitoring, current_step_number, len(prompt),
     )
     return prompt
 
@@ -211,6 +212,57 @@ Use go_to_step when the learner asks to jump to a specific step number, or to re
 
 _STEP_PROGRESSION_AUTO = _step_progression_auto()
 _STEP_PROGRESSION_MANUAL = _step_progression_manual()
+
+
+def _visual_monitoring(auto_advance: bool, active_monitoring: bool) -> str:
+    """Build the proactive-monitoring section, gated by the two toggles.
+
+    active_monitoring=False  → REACTIVE mode: no heartbeat is sent by the phone,
+        so this just instructs the model to stay reactive (no proactive comments,
+        no visual advance). The Active/Passive toggle is the master switch.
+    active_monitoring=True, auto_advance=True  → full heartbeat protocol: error
+        interjection AND visual step advance.
+    active_monitoring=True, auto_advance=False → error interjection only; visual
+        advance is explicitly forbidden (advancement is verbal-only).
+    """
+    if not active_monitoring:
+        return """=== REACTIVE MODE ===
+You can see the learner's camera feed, but you are in REACTIVE mode. Respond only when the learner speaks to you. Do NOT proactively comment on what you see, do NOT send unprompted progress updates, and do NOT advance steps on your own. Advance only when the learner tells you they're done — call advance_step with trigger="verbal". Otherwise stay silent and let them work."""
+
+    # Active monitoring — the phone sends the `[check]` heartbeat. The completion
+    # bullet differs by auto_advance: visual advance only when auto_advance is on.
+    if auto_advance:
+        completion_bullet = (
+            '- If the step\'s completion criteria appear clearly met AND have persisted '
+            'across multiple moments, call `advance_step` with trigger="visual". '
+            '`[check]` is the primary moment for visual advance — do not wait for the '
+            'learner to say "done" if you can see the step is complete.'
+        )
+    else:
+        completion_bullet = (
+            '- Do NOT advance the step from what you see. Auto-advance is OFF for this '
+            'session: advancement happens only when the learner says they\'re done '
+            '(then you call `advance_step` with trigger="verbal"). Even if the '
+            'completion criteria look clearly met on `[check]`, stay silent and do not '
+            'call advance_step.'
+        )
+
+    return f"""=== VISUAL MONITORING (heartbeat + silence protocol) ===
+You can see the learner's camera feed. The iOS client sends you a short internal marker — the exact string `[check]` — every few seconds while the learner is working silently. Treat `[check]` as an **internal diagnostic signal, not user speech**.
+
+On each `[check]`:
+- Silently compare the current camera frame to both the OBSERVABLE ERRORS list and the completion criteria inside the CURRENT STEP block.
+- If a listed OBSERVABLE ERROR is visible AND has persisted across multiple moments (not a fleeting frame), speak ONE short corrective sentence referring to what you see. Example shape: short, directive, no hedging.
+{completion_bullet}
+- Otherwise, produce NO output at all. No audio, no text, no acknowledgement. A silent turn on `[check]` is the correct default — it means everything looks fine and the step is still in progress.
+
+Hard rules:
+- Never read the word `[check]` or the brackets out loud.
+- Never respond to `[check]` conversationally (no "sure, checking now", no "looks good", no "got it").
+- Never narrate the scene or invent details you do not clearly see — if you're not sure, stay silent.
+- Never comment on what the learner is doing correctly. Silence is the acknowledgement.
+
+Everything else (the learner's spoken questions, step completions, `advance_step` responses, barge-in) behaves normally. The silence rule applies only to the `[check]` path."""
 
 
 # TRANSITIONAL: _ERROR_CRITERIA_OVERRIDES is the legacy fallback from before

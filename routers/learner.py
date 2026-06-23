@@ -58,6 +58,7 @@ async def start_session(req: SessionStartRequest):
         session = create_session(
             req.procedure_id,
             auto_advance=req.auto_advance,
+            active_monitoring=req.active_monitoring,
             voice=req.voice,
             starting_step=req.starting_step,
         )
@@ -71,6 +72,7 @@ async def start_session(req: SessionStartRequest):
     system_prompt = build_system_prompt(
         proc,
         auto_advance=session["auto_advance"],
+        active_monitoring=session["active_monitoring"],
         current_step_number=session["current_step"],
     )
 
@@ -112,6 +114,7 @@ async def refresh_token(session_id: str, handle: str | None = None):
     system_prompt = build_system_prompt(
         proc,
         auto_advance=session["auto_advance"],
+        active_monitoring=session["active_monitoring"],
         current_step_number=session["current_step"],
     )
 

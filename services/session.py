@@ -13,6 +13,7 @@ _sessions: dict[str, dict] = {}
 def create_session(
     procedure_id: str | None = None,
     auto_advance: bool = True,
+    active_monitoring: bool = True,
     voice: str = "Puck",
     starting_step: int | None = None,
     session_type: str = "learner",
@@ -58,6 +59,7 @@ def create_session(
             "step_history": [],
             "procedure": proc,
             "auto_advance": auto_advance,
+            "active_monitoring": active_monitoring,
             "voice": voice,
         }
         logger.info(
@@ -262,11 +264,34 @@ def delete_session(session_id: str) -> bool:
     return False
 
 
-def _dispatch_advance_step(session_id: str, _args: dict) -> dict:
-    """Dispatcher wrapper — tag the completion method based on session mode."""
+def _dispatch_advance_step(session_id: str, args: dict) -> dict:
+    """Dispatcher wrapper — enforce the auto-advance / active-monitoring toggles.
+
+    Gemini supplies `trigger` ("verbal" if the learner said they're done,
+    "visual" if it detected completion from the camera). A visual advance is
+    only honored when the session is BOTH actively monitoring AND auto-advancing
+    — otherwise the model must wait for the learner to say so. We refuse the
+    advance rather than silently downgrading it, so a model that ignores the
+    prompt still can't move the step. The completion `method` is tagged from the
+    actual trigger (not inferred from the mode), fixing prior mis-tagging.
+    """
     session = _sessions.get(session_id)
-    method = "visual" if session and session.get("auto_advance") else "verbal"
-    return advance_step(session_id, method=method)
+    trigger = (args or {}).get("trigger") or "verbal"
+    visual_ok = bool(
+        session and session.get("active_monitoring") and session.get("auto_advance")
+    )
+    if trigger == "visual" and not visual_ok:
+        logger.info(
+            "Session %s: refused visual advance_step (active=%s, auto_advance=%s)",
+            session_id,
+            session.get("active_monitoring") if session else None,
+            session.get("auto_advance") if session else None,
+        )
+        return {
+            "status": "ignored",
+            "message": "Auto-advance is off — only advance when the learner says they're done.",
+        }
+    return advance_step(session_id, method=trigger)
 
 
 # Tool-call dispatcher, keyed by (session_type, tool_name). Per-mode packages

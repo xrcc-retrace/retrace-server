@@ -162,6 +162,7 @@ async def handoff(session_id: str, req: HandoffRequest):
         session_id=session_id,
         procedure_id=req.procedure_id,
         auto_advance=req.auto_advance,
+        active_monitoring=req.active_monitoring,
         voice=req.voice,
     )
     if not promoted:
@@ -197,6 +198,7 @@ async def _build_learner_start_response(learner_session: dict, voice: str) -> Se
     system_prompt = build_system_prompt(
         proc,
         auto_advance=learner_session["auto_advance"],
+        active_monitoring=learner_session["active_monitoring"],
         current_step_number=learner_session["current_step"],
     )
     token_data = await create_ephemeral_token(

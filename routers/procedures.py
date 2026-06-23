@@ -1,11 +1,14 @@
 import logging
+import re
+import subprocess
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from config import CLIPS_DIR
+from config import CLIPS_DIR, FFMPEG_PATH
+from services.clip_extractor import lens_variant_path, transcode_lens_variant
 from services.database import (
     get_procedure,
     list_procedures,
@@ -13,6 +16,15 @@ from services.database import (
     update_procedure_fields,
     update_step_fields,
 )
+
+# Procedure ids are server-generated UUIDs; this allowlist keeps a hostile
+# `procedure_id` path segment from escaping CLIPS_DIR when building clip paths.
+_PROCEDURE_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _validate_procedure_id(procedure_id: str) -> None:
+    if not _PROCEDURE_ID_RE.fullmatch(procedure_id):
+        raise HTTPException(400, "Invalid procedure id")
 
 
 class ProcedureUpdateBody(BaseModel):
@@ -101,9 +113,72 @@ async def update_step_endpoint(procedure_id: str, step_number: int, body: StepUp
 
 
 @router.get("/clips/{procedure_id}/step_{step_number}.mp4")
-async def get_clip(procedure_id: str, step_number: int):
-    """Serve a video clip for a specific procedure step."""
+async def get_clip(procedure_id: str, step_number: int, profile: Optional[str] = None):
+    """Serve a video clip for a specific procedure step.
+
+    `?profile=lens` serves a small, bitrate-capped variant for the glasses lens
+    (transcoded from the full clip on first request and cached beside it). Any
+    other / no profile serves the full-resolution clip. Unknown profiles and a
+    failed transcode both fall back to the full clip — the param is purely an
+    optimization, never a hard dependency, so the iOS client can request it even
+    against an older server.
+    """
+    _validate_procedure_id(procedure_id)
     clip_path = CLIPS_DIR / procedure_id / f"step_{step_number}.mp4"
     if not clip_path.exists():
         raise HTTPException(404, "Clip not found")
+
+    if profile == "lens":
+        lens_path = lens_variant_path(clip_path)
+        if lens_path.exists() or transcode_lens_variant(clip_path, lens_path):
+            return FileResponse(str(lens_path), media_type="video/mp4")
+        # Transcode failed — degrade to the full clip rather than erroring.
+        logger.warning("Lens variant unavailable for %s step %s; serving full clip",
+                       procedure_id, step_number)
+
     return FileResponse(str(clip_path), media_type="video/mp4")
+
+
+@router.get("/clips/{procedure_id}/step_{step_number}.jpg")
+async def get_clip_poster(procedure_id: str, step_number: int):
+    """Serve a single-frame JPEG poster for a step's clip.
+
+    Used as the lens-side thumbnail in the Coaching `.referenceExpanded`
+    surface — `MWDATDisplay.Image(uri:)` only accepts HTTPS images, not
+    embedded video frames. Extracts the first frame on demand via ffmpeg
+    and caches the JPEG on disk next to the source clip. Subsequent
+    requests serve the cached file directly.
+    """
+    _validate_procedure_id(procedure_id)
+    clip_path = CLIPS_DIR / procedure_id / f"step_{step_number}.mp4"
+    if not clip_path.exists():
+        raise HTTPException(404, "Clip not found")
+
+    poster_path = clip_path.with_suffix(".jpg")
+    if not poster_path.exists():
+        # First-frame extraction. -ss before -i is the "fast" seek (decodes
+        # nothing before the keyframe) which is fine at t=0. -frames:v 1
+        # writes exactly one frame; -q:v 2 is the higher-quality end of the
+        # JPEG range (1-31, lower is better). -y overwrites stale partial
+        # files in case of a prior crash.
+        try:
+            subprocess.run(
+                [
+                    FFMPEG_PATH,
+                    "-y",
+                    "-ss", "0",
+                    "-i", str(clip_path),
+                    "-frames:v", "1",
+                    "-q:v", "2",
+                    str(poster_path),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=15,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            logger.error("Poster extraction failed for %s step %s: %s",
+                         procedure_id, step_number, e)
+            raise HTTPException(500, "Failed to extract poster") from e
+
+    return FileResponse(str(poster_path), media_type="image/jpeg")

@@ -7,6 +7,65 @@ from config import FFMPEG_PATH
 
 logger = logging.getLogger(__name__)
 
+# Suffix for the lens-optimized variant served to the glasses at ?profile=lens.
+LENS_VARIANT_SUFFIX = "_lens"
+
+
+def lens_variant_path(clip_path: Path) -> Path:
+    """The lens-variant path that sits beside a full clip (step_N.mp4 → step_N_lens.mp4)."""
+    return clip_path.with_name(f"{clip_path.stem}{LENS_VARIANT_SUFFIX}{clip_path.suffix}")
+
+
+def transcode_lens_variant(src_mp4: Path, dst_mp4: Path) -> bool:
+    """Transcode a full-res step clip into a small, bitrate-capped lens variant.
+
+    The native glasses lens is a 600x600 viewport fed over the Bluetooth Display
+    link, so bytes-to-first-frame dominates playback latency. This downscales to
+    fit 600x600 (aspect preserved, dims kept even for libx264) and caps the
+    bitrate, while keeping the same iOS/VideoToolbox-compatibility flags as
+    `extract_clips` (-bf 0, yuv420p, bt709 color tags + SEI, +faststart) so the
+    variant plays everywhere the full clip does.
+
+    Returns True on success, False (logged) on any ffmpeg failure — callers treat
+    a False as "fall back to the full clip" rather than an error.
+    """
+    cmd = [
+        FFMPEG_PATH, "-y",
+        "-i", str(src_mp4),
+        # Fit within 600x600, preserve aspect, force even dimensions (libx264).
+        "-vf", "scale=600:600:force_original_aspect_ratio=decrease:force_divisible_by=2",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "28",
+        # Hard bitrate ceiling — the real lever for BT-link transfer time.
+        "-maxrate", "800k",
+        "-bufsize", "1600k",
+        "-r", "20",
+        # Same iOS-compat flags as extract_clips (negative-DTS / color SEI).
+        "-bf", "0",
+        "-pix_fmt", "yuv420p",
+        "-color_primaries", "bt709",
+        "-color_trc", "bt709",
+        "-colorspace", "bt709",
+        "-color_range", "tv",
+        "-x264opts", "colorprim=bt709:transfer=bt709:colormatrix=bt709",
+        "-c:a", "aac",
+        "-b:a", "64k",
+        "-movflags", "+faststart",
+        str(dst_mp4),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=120)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        stderr = getattr(e, "stderr", "") or ""
+        logger.error("Lens-variant transcode failed for %s: %s", src_mp4.name, stderr[-500:])
+        return False
+    logger.info(
+        "Lens variant saved: %s (%.0f KB)",
+        dst_mp4.name, dst_mp4.stat().st_size / 1024,
+    )
+    return True
+
 
 async def extract_clips(
     video_path: str,
@@ -89,5 +148,12 @@ async def extract_clips(
         file_size_kb = output_path.stat().st_size / 1024
         clip_paths[step_num] = str(output_path)
         logger.info("Clip saved: %s (%.0f KB)", output_path.name, file_size_kb)
+
+        # Pre-generate the lens-optimized variant so the first on-glasses view is
+        # already fast. Non-fatal: the ?profile=lens serving path regenerates on
+        # demand if this is missing, and the full clip is always the fallback.
+        await asyncio.to_thread(
+            transcode_lens_variant, output_path, lens_variant_path(output_path)
+        )
 
     return clip_paths, failed

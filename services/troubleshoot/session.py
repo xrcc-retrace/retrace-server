@@ -170,6 +170,7 @@ def promote_to_learner(
     session_id: str,
     procedure_id: str,
     auto_advance: bool = True,
+    active_monitoring: bool = True,
     voice: str = "Puck",
 ) -> dict | None:
     """Spin up a Learner session on the chosen procedure, mark the
@@ -187,6 +188,7 @@ def promote_to_learner(
         procedure_id=procedure_id,
         session_type="learner",
         auto_advance=auto_advance,
+        active_monitoring=active_monitoring,
         voice=voice,
     )
     if not learner:

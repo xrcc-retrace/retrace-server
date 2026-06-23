@@ -94,6 +94,7 @@ class TroubleshootSessionStartResponse(BaseModel):
 class HandoffRequest(BaseModel):
     procedure_id: str
     auto_advance: bool = True
+    active_monitoring: bool = True
     voice: str = "Puck"
 
 

@@ -60,7 +60,7 @@ def build_live_connect_config(
     )
     return types.LiveConnectConfig(
         response_modalities=["AUDIO"],
-        media_resolution="MEDIA_RESOLUTION_LOW",
+        media_resolution="MEDIA_RESOLUTION_HIGH",
         system_instruction=types.Content(
             parts=[types.Part(text=system_instruction)]
         ),
