@@ -167,15 +167,18 @@ class _BaseProcedureStep(BaseModel):
     )
     completion_criteria: str = Field(
         description=(
-            "ONE standalone spatial end-state sentence describing how the "
-            "scene LOOKS once this step is done, verifiable from a single "
-            "head-mounted-camera frame WITHOUT needing to remember an "
-            "earlier frame. Prefer relational configuration of named "
-            "objects (X is now resting on top of Y; the tray is now out "
-            "of the slot; the lid is now open). AVOID criteria that "
-            "require counting events, measuring elapsed time, text "
-            "recognition, torque, or sub-millimeter alignment — those "
-            "aren't verifiable in a single frame."
+            "ONE standalone sentence, in the PRESENT TENSE, describing what "
+            "IS VISIBLE in the frame once this step is done — verifiable from "
+            "a single head-mounted-camera frame WITHOUT remembering an earlier "
+            "frame. Assert POSITIVE presence/configuration of named objects "
+            "(the port is empty; the lid rests on top of the bottle; the tray "
+            "sits out of the slot). NEVER describe absence-of, removal-of, "
+            "motion, or 'no longer' — those need the before-frame. Rewrite "
+            "'the cable is removed from the port' as 'the port is empty with no "
+            "cable inserted'. FORBIDDEN: present-perfect/past ('has been', 'has "
+            "pressed', 'has tapped'), motion verbs ('lifts off', 'is lowered'), "
+            "and any 'no longer'. AVOID criteria needing counting, elapsed "
+            "time, text recognition, torque, or sub-millimeter alignment."
         ),
     )
 
@@ -211,12 +214,14 @@ class GeminiVideoProcedureStep(_BaseProcedureStep):
     )
     completion_criteria: str = Field(
         description=(
-            "ONE standalone spatial end-state sentence describing how the "
-            "scene LOOKS once this step is done, verifiable from a single "
-            "camera frame without remembering the 'before' frame. Name the "
-            "objects and their relative configuration (e.g. 'the glasses "
-            "are now resting on top of the keyboard', 'the drip tray is now "
-            "out of the base and sitting on the counter')."
+            "ONE standalone sentence, PRESENT TENSE, describing what IS "
+            "VISIBLE once this step is done — verifiable from a single camera "
+            "frame without the 'before' frame. Assert POSITIVE presence/"
+            "configuration of named objects ('the glasses rest on top of the "
+            "keyboard'; 'the drip tray sits out of the base on the counter'; "
+            "'the port is empty with no cable inserted'). NEVER use absence/"
+            "removal/motion/'no longer' or present-perfect ('has been', 'has "
+            "pressed'): the oracle cannot see a change, only a current state."
         ),
     )
     timestamp_start: float = Field(
@@ -233,11 +238,13 @@ class GeminiVideoProcedureStep(_BaseProcedureStep):
         description=(
             "UP TO three observable visual errors — only include ones that "
             "genuinely exist for this step; an empty list is acceptable. "
-            "Each is a single declarative sentence describing a visible "
-            "state (named object plus named wrong configuration) that, if a "
-            "camera saw it during live coaching, should cause the AI to "
-            "interject. Must be mutually distinct — never pad to three with "
-            "paraphrases. See PROCEDURE_PROMPT for the template and hard rules."
+            "Each is a single declarative sentence naming an object in a "
+            "COMMITTED, PERSISTENT wrong configuration (wrong orientation, "
+            "wrong item in hand, wrong sub-part engaged). NOT a transient "
+            "absence or not-yet-done state: never 'X is not visible', 'the "
+            "hand is not touching …', or 'not yet …' — those are true during "
+            "normal pauses and cause false interjections. Must be mutually "
+            "distinct — never pad to three. See PROCEDURE_PROMPT for hard rules."
         ),
     )
     visual_verifiability: VisualVerifiability = Field(
@@ -250,9 +257,13 @@ class GeminiVideoProcedureStep(_BaseProcedureStep):
             "into another, lid open↔closed, part present↔absent). 'marginal' "
             "= a smaller or orientation-only change a VLM can miss. 'none' = "
             "no single-frame visual end-state (counting presses, waiting, "
-            "torque, sub-mm alignment). Before choosing 'none', hunt for a "
-            "spatial PROXY for the result (e.g. 'the LED is now solid green' "
-            "after N presses) and prefer that."
+            "torque, sub-mm alignment). A key press, button tap, or brief "
+            "finger contact leaves NO lasting visual change → 'none' (the "
+            "finger being off the key looks identical to before the press); "
+            "keystroke and reset sequences are canonically 'none'. Before "
+            "choosing 'none', hunt for a spatial PROXY for the RESULT (e.g. "
+            "'the LED is solid green', 'the panel sits flush') and, if one "
+            "exists, use it with 'reliable'/'marginal' instead."
         ),
     )
 

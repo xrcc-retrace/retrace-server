@@ -22,13 +22,20 @@ import _common as c
 
 
 def main() -> None:
+    import shutil
     ap = argparse.ArgumentParser()
     ap.add_argument("--procedure", help="Harvest only this procedure id")
+    ap.add_argument("--force", action="store_true",
+                    help="Re-cut cached frames (use after re-extracting clips)")
     args = ap.parse_args()
 
     procs = c.procedures_with_clips()
     if args.procedure:
         procs = [p for p in procs if p["id"] == args.procedure]
+
+    if args.force:
+        for p in procs:
+            shutil.rmtree(c.FRAMES_DIR / p["id"], ignore_errors=True)
 
     c.header(f"Harvesting frames — {len(procs)} procedure(s) with clips")
     total_steps = total_frames = staged_count = 0

@@ -147,9 +147,13 @@ async def main() -> None:
     ap.add_argument("--limit", type=int, help="Cap number of procedures")
     ap.add_argument("--grounding", choices=["both", "image", "text"], default="both")
     ap.add_argument("--smoke", action="store_true", help="Just 2 procedures")
+    ap.add_argument("--procedure", action="append",
+                    help="Only these procedure id(s) (prefix ok, repeatable)")
     args = ap.parse_args()
 
     procs = c.procedures_with_clips()
+    if args.procedure:
+        procs = [p for p in procs if any(p["id"].startswith(x) for x in args.procedure)]
     if args.smoke:
         procs = procs[:2]
     elif args.limit:

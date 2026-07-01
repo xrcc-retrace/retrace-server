@@ -33,36 +33,44 @@ Be precise with timestamps. Each step should be a discrete, actionable unit. Ste
 A separate vision model will later confirm each step by comparing the learner's live camera frame against this step's `completion_criteria`. That model is reliable at STATIC SPATIAL RELATIONSHIPS (object A now on top of / inside / removed from object B; lid open vs closed; part present vs absent) and UNRELIABLE at counting events, timing, torque, and sub-millimeter alignment.
 
 For each step, mentally compare the scene at the END of the previous step to the scene at the END of this step and name the spatial change:
-- Write `completion_criteria` as a SINGLE standalone sentence describing how the scene LOOKS when done — verifiable from one frame without remembering the "before" frame. Name the objects and their relative configuration ("the glasses are now resting on top of the keyboard"), not the action ("put the glasses down").
+- Write `completion_criteria` in the PRESENT TENSE, describing what IS VISIBLE in a single frame when done — verifiable without remembering the "before" frame. Assert the POSITIVE presence/configuration of named objects, never an absence, removal, motion, or "no longer" (the vision model sees a current state, not a change). Rewrite the anti-patterns:
+  - "the cable is removed from the port"            → "the port is empty, with no cable inserted"
+  - "the user's right hand lifts off the keyboard"  → (usually `none`; if a result is visible, name it, e.g. "the login screen is shown")
+  - "the lid has been screwed onto the bottle"      → "the lid sits flush on top of the bottle"
+  - "a portion of the avocado has been eaten"       → (a delta; `none` unless a stable end-state is visible)
+  - "the finger is no longer touching the escape key" → `none` (a released key looks identical to before the press)
+  FORBIDDEN in completion_criteria: present-perfect/past ("has been", "has pressed", "has tapped"), motion verbs ("lifts off", "is lowered", "removes"), and any "no longer".
 - Set `visual_verifiability`:
   - `reliable` — a clear static spatial-configuration change detectable in one frame.
   - `marginal` — a smaller or orientation-only change a vision model can sometimes miss.
-  - `none` — NO single-frame visual end-state (the step is counting presses, waiting, tightening, aligning finely). Before choosing `none`, hunt for a spatial PROXY for the RESULT (e.g. "the LED is now solid green" after N presses, "the panel is now flush") and use that with `reliable`/`marginal`. Only use `none` when no visual consequence exists — that step will be advanced verbally instead.
+  - `none` — NO single-frame visual end-state. A key press, button tap, or brief finger contact leaves no lasting visual change, so grade it `none` — a released key/button looks identical to before the press. Counting presses, waiting, tightening, and fine alignment are also `none`. Keystroke and device-reset sequences are canonically `none`. Before choosing `none`, hunt for a spatial PROXY for the RESULT (e.g. "the LED is solid green" after N presses, "the panel sits flush", "the screen shows the reset menu") and, if one exists, use it with `reliable`/`marginal`. Only use `none` when no visual consequence exists — that step is advanced verbally instead.
 
 For the per-step `error_criteria` field, produce UP TO THREE observable visual errors — only ones that genuinely exist for this step. An empty list is acceptable; never pad to three with paraphrases. Each must be a single full declarative sentence describing a visible STATE — never an action, intent, or judgment.
 
 HARD RULES — every error must pass all of these:
-- Describes a physical state visible in a single frame (or a couple of consecutive frames). Must NOT require counting events over time, measuring duration, or inferring what the learner meant.
+- Describes a COMMITTED, PERSISTENT wrong state visible in a single frame — a configuration the learner has actually settled into, not a transient absence or a not-yet-done state. Must NOT require counting events over time, measuring duration, or inferring what the learner meant.
+- Is NOT true during a normal pause. Never "X is not visible", "the hand is not touching …", or "not yet …" — those fire constantly while the learner simply looks away or rests between actions, causing false interjections.
 - Names the specific object and the specific wrong configuration (orientation, position, pairing, which sub-part is being touched). No vague nouns like "thing" or "item".
 - Contains NO judgment words ("careless", "sloppy", "wrong-ish"), NO cognitive claims ("seems confused", "distracted", "not paying attention"), NO abstract faults ("technique is off", "something is off", "not quite right"). These are not observable states.
-- The three errors are mutually distinct — no paraphrases of the same mistake with different wording.
+- The errors are mutually distinct — no paraphrases of the same mistake with different wording.
 
 USEFUL TEMPLATE for the errors (use the ones that fit; skip any that don't):
-(a) Target missing — e.g., "[the key object] is not visible in the camera view at all." Almost always applicable to hands-on tasks; include it unless the step is purely verbal or uses no anchoring object.
-(b) Wrong object state — the object IS visible but in a state that contradicts what this step requires (wrong orientation, wrong item in hand, closed-when-should-be-open, pre-condition not satisfied).
-(c) Wrong interaction — the learner is acting on the correct object in the wrong way (wrong button, wrong grip, wrong side, wrong direction of motion detectable across frames).
+(a) Wrong object state — the object is visible but in a state that contradicts what this step requires (wrong orientation, wrong item in hand, closed-when-should-be-open, pre-condition not satisfied).
+(b) Wrong interaction — the learner is acting on the correct object in the wrong way (wrong button, wrong grip, wrong side).
+(c) Target missing — ONLY when the object's absence is itself the mistake for this step (e.g. a required part was never brought into the workspace), NOT mere off-camera framing during normal work. Use sparingly.
 
 GOOD examples (note specificity and sentence form):
-- "No mouse is visible in the camera view at all."
+- "The mouse is right-side up, but this step needs its base facing the camera."
 - "The container lid is still closed, though this step requires the container to be open before the learner continues."
 - "The learner is pressing a button other than the circular button at the center of the mouse's base."
 
 BAD examples — do NOT produce output in these shapes:
+- "The mouse is not visible in the camera view." — transient absence; true whenever the learner glances away. (Only allowed if the object's absence is itself the step's mistake.)
+- "The learner's hand is not touching any key." — true during every normal pause; fires constantly.
 - "The learner is being careless." — judgment, not an observable state.
 - "The technique is off." — abstract, no named object or state.
 - "The button has not been pressed the correct number of times yet." — requires counting events over time, not a visible state.
 - "The user seems confused." — cognitive claim, not visible.
-- "Something is wrong with how the mouse is being held." — vague, no specific wrong configuration.
 
 Output at most three entries per step — fewer is fine, zero is fine when nothing distinct applies. These strings are handed to the verification model, so clarity and specificity directly determine whether the coach interjects correctly or hallucinates.
 

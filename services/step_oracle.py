@@ -49,11 +49,11 @@ You are given, in order:
 - A numbered list of KNOWN ERRORS (visible wrong-states), possibly empty.
 
 Return three fields judged STRICTLY from the CURRENT image:
-- complete: true ONLY if the current image clearly shows the completion end-state — the same spatial configuration as the reference (when provided) and matching the criterion. If you are not sure, return false.
+- complete: true ONLY if the CURRENT image clearly shows the SPECIFIC spatial configuration named in the criterion. The REFERENCE shows the done state, but the same workspace looks broadly similar before and after the step — do NOT answer complete just because the current frame resembles the reference or shows the same objects. Verify the exact configuration the criterion names (what is on top of / inside / removed from what). If it is not clearly present, return false.
 - error_index: the 0-based index of the FIRST known error clearly visible in the current image, or null if none is clearly present. If unsure, null.
 - confidence: 0.0-1.0, your confidence in the `complete` judgment.
 
-CRITICAL: false positives are far worse than false negatives here. A missed completion just means the learner tells the coach they're done; a wrong "complete" pulls them forward in the middle of their work and breaks trust. When the frame is ambiguous, occluded, blurry, or the key objects aren't clearly visible, answer complete=false and error_index=null.
+CRITICAL: false positives are far worse than false negatives here. A missed completion just means the learner tells the coach they're done; a wrong "complete" pulls them forward in the middle of their work and breaks trust. When the frame is ambiguous, occluded, blurry, only generally resembles the reference, or the key objects aren't clearly in the criterion's configuration, answer complete=false and error_index=null.
 
 Output JSON matching the schema."""
 

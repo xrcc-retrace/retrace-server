@@ -246,10 +246,14 @@ async def main() -> None:
                     help="Run the live extractor on test_data instead of reading the DB")
     ap.add_argument("--judge", action="store_true", help="Add the Flash LLM-judge pass")
     ap.add_argument("--limit", type=int)
+    ap.add_argument("--procedure", action="append",
+                    help="Only these procedure id(s) (prefix ok, repeatable; DB mode only)")
     args = ap.parse_args()
 
     log = c.EventLog("eval_extractor")
     procs = await (_gather_reextract(args.limit) if args.reextract else _gather_db(args.limit))
+    if args.procedure and not args.reextract:
+        procs = [p for p in procs if any(p["id"].startswith(x) for x in args.procedure)]
     c.header(f"Extractor quality — {len(procs)} procedure(s) "
              f"({'re-extracted' if args.reextract else 'from DB'})")
 
