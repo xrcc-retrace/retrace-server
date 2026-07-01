@@ -20,3 +20,9 @@ data/clips/
 data/manuals/
 data/manual_images/
 data/icons/
+
+# Eval harness dev artifacts — test-input frames harvested from expert videos
+# and per-run report outputs. The eval *source* under evals/ is tracked; these
+# two subtrees are large (frames) or ephemeral (reports) and dev-only.
+evals/fixtures/
+evals/reports/

@@ -254,6 +254,7 @@ async def ingest_manual(
                 "warnings": s.warnings,
                 "completion_criteria": s.completion_criteria,
                 "error_criteria": s.error_criteria,
+                "visual_verifiability": s.visual_verifiability,
                 "clip_url": url,
                 "clip_status": "ready" if url else "none",
             })

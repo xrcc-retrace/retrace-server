@@ -23,6 +23,15 @@ RETRACE_LIVE_MODEL = os.environ.get(
     "gemini-3.1-flash-live-preview",
 )
 
+# Out-of-band step-verification oracle. A dedicated Flash model compares the
+# learner's current camera frame against the step's spatial end-state (and
+# error states) so Gemini Live never has to do visual verification itself.
+# Override via RETRACE_ORACLE_MODEL for a fast swap without a code change.
+RETRACE_ORACLE_MODEL = os.environ.get(
+    "RETRACE_ORACLE_MODEL",
+    "gemini-2.5-flash",
+)
+
 # Find ffmpeg binary
 FFMPEG_PATH = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
 

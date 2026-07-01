@@ -116,6 +116,10 @@ def advance_step(session_id: str, method: str = "verbal") -> dict:
     if session["status"] == "completed":
         return {"status": "already_completed", "message": "All steps are already done."}
 
+    # Any advance (visual or verbal) clears the oracle's per-step dwell streak
+    # so the next step starts its confirmation count from zero.
+    session["_verify_streak"] = 0
+
     # Record completion of current step
     session["step_history"].append({
         "step_number": session["current_step"],
@@ -177,6 +181,8 @@ def go_to_step(session_id: str, step_number: int) -> dict:
 
     session["current_step"] = step_number
     session["status"] = "in_progress"
+    # Jumping steps invalidates any in-flight oracle dwell streak.
+    session["_verify_streak"] = 0
 
     step = get_current_step_detail(session_id)
     logger.info("Session %s: jumped to step %d", session_id, step_number)

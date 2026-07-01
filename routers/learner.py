@@ -1,7 +1,9 @@
+import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 
+from config import CLIPS_DIR
 from models.procedure import Procedure
 from models.session import (
     EphemeralTokenResponse,
@@ -14,19 +16,30 @@ from models.session import (
     ToolCallRequest,
     ToolCallResponse,
 )
+from services.clip_extractor import extract_done_frame
 from services.ephemeral_token import create_ephemeral_token
 from services.prompt_builder import build_system_prompt, GEMINI_CONFIG, TOOL_DEFINITIONS
 from services.session import (
+    advance_step,
     create_session,
     delete_session,
     get_context_summary,
+    get_current_step_detail,
     get_session,
     handle_tool_call,
 )
+from services.step_oracle import verify_step
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/learner", tags=["learner"])
+
+# Verification-oracle tuning. A completion is only accepted when the oracle
+# reports `complete=true` with confidence at/above this floor, sustained for
+# the number of consecutive polls the step's verifiability level requires
+# (dwell — filters single-frame false positives; see design principle #2).
+_ORACLE_CONFIDENCE_FLOOR = 0.6
+_DWELL_REQUIRED = {"reliable": 1, "marginal": 2}
 
 # Server-authoritative voice list — iOS fetches this instead of hardcoding
 VOICE_OPTIONS = [
@@ -141,6 +154,114 @@ async def tool_call(session_id: str, req: ToolCallRequest):
 
     result = handle_tool_call(session_id, req.tool_name, req.arguments)
     return ToolCallResponse(result=result)
+
+
+@router.post("/session/{session_id}/verify")
+async def verify_current_step(session_id: str, frame: UploadFile = File(...)):
+    """Out-of-band visual verification of the current step.
+
+    The phone posts the learner's latest camera frame (~every few seconds).
+    The server runs the Flash oracle against the step's spatial end-state
+    (grounded on the expert's 'done' frame) and its error states, applies the
+    dwell + toggle gates, and — on a confirmed completion — advances the
+    session server-side and returns the same shape a tool-call `advance_step`
+    would. Gemini Live is never involved; the phone injects the outcome into
+    the Live socket as an `[ADVANCE]` / `[CORRECTION]` turn.
+
+    Response `status`:
+      - `skip`      — step is verbal-only (visual_verifiability=none) or the
+                      session isn't actively auto-advancing. Phone does nothing.
+      - `pending`   — polled, nothing confirmed yet (or oracle unavailable).
+      - `error`     — a known error is visible; `error_text` is the correction.
+      - `advanced` / `completed` — the step advanced; carries next-step fields.
+    """
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    if session.get("status") == "completed" or not session.get("procedure"):
+        return {"status": "skip"}
+
+    # Master switch: with active monitoring off the coach is fully reactive —
+    # the phone shouldn't be polling at all, but skip defensively.
+    if not session.get("active_monitoring"):
+        return {"status": "skip"}
+
+    step = get_current_step_detail(session_id)
+    if not step:
+        return {"status": "skip"}
+
+    verifiability = step.get("visual_verifiability", "reliable")
+    errors = step.get("error_criteria") or []
+    # Advance is allowed only on a visually-verifiable step in an auto-advancing
+    # session (mirrors _dispatch_advance_step). Error interjection stays alive
+    # regardless, so a verbal-only step can still be corrected mid-work.
+    advance_allowed = verifiability != "none" and bool(session.get("auto_advance"))
+    if not advance_allowed and not errors:
+        return {"status": "skip"}
+
+    current_jpg = await frame.read()
+    if not current_jpg:
+        return {"status": "pending"}
+
+    # Image-to-image grounding when a real clip exists (video procedures).
+    # Manual/web steps have no video 'done' frame → text-only comparison.
+    reference_jpg: bytes | None = None
+    clip_path = CLIPS_DIR / session["procedure_id"] / f"step_{step['step_number']}.mp4"
+    if clip_path.exists():
+        done_path = await asyncio.to_thread(extract_done_frame, clip_path)
+        if done_path is not None:
+            reference_jpg = await asyncio.to_thread(done_path.read_bytes)
+
+    polled_step = step["step_number"]
+    verdict = await verify_step(current_jpg, step, reference_jpg)
+    if verdict is None:
+        return {"status": "pending"}
+
+    # The oracle call is awaited — a verbal advance_step could have landed
+    # while it was in flight, moving the session off the step we verified.
+    # If so, drop this verdict rather than advancing a step that already moved.
+    current = get_current_step_detail(session_id)
+    if not current or current["step_number"] != polled_step:
+        return {"status": "pending"}
+
+    # Error interjection takes precedence — an error means the step isn't done.
+    # Dedup server-side: emit each correction once until a clean poll clears it,
+    # so the coach doesn't nag every tick while the mistake persists.
+    if verdict.error_index is not None and 0 <= verdict.error_index < len(errors):
+        session["_verify_streak"] = 0
+        error_text = errors[verdict.error_index]
+        if session.get("_last_error") == error_text:
+            return {"status": "pending"}
+        session["_last_error"] = error_text
+        return {"status": "error", "error_text": error_text}
+
+    # Clean frame — clear the last-error latch so a recurrence re-fires.
+    session["_last_error"] = None
+
+    if not advance_allowed:
+        return {"status": "pending"}
+
+    # Completion path with dwell: require N consecutive confident positives.
+    confident = verdict.complete and verdict.confidence >= _ORACLE_CONFIDENCE_FLOOR
+    if not confident:
+        session["_verify_streak"] = 0
+        return {"status": "pending"}
+
+    required = _DWELL_REQUIRED.get(verifiability, 1)
+    streak = session.get("_verify_streak", 0) + 1
+    session["_verify_streak"] = streak
+    if streak < required:
+        return {"status": "pending", "confirmations": streak, "required": required}
+
+    # Confirmed — advance server-side (tagged visual) and hand the phone the
+    # next-step payload so it can inject an [ADVANCE] turn into Gemini Live.
+    result = advance_step(session_id, method="visual")
+    logger.info(
+        "Session %s: oracle advanced step via visual verification (%s)",
+        session_id, verifiability,
+    )
+    return result
 
 
 @router.get("/session/{session_id}/state", response_model=SessionState)

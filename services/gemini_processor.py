@@ -29,7 +29,17 @@ The expert may narrate what they're doing — use both visual and audio cues to 
 
 Be precise with timestamps. Each step should be a discrete, actionable unit. Steps should not overlap in time and together should cover the entire video duration.
 
-For the per-step `error_criteria` field, produce EXACTLY THREE observable visual errors. Each must be a single full declarative sentence describing a visible STATE — never an action, intent, or judgment.
+=== SPATIAL END-STATE + VERIFIABILITY (critical) ===
+A separate vision model will later confirm each step by comparing the learner's live camera frame against this step's `completion_criteria`. That model is reliable at STATIC SPATIAL RELATIONSHIPS (object A now on top of / inside / removed from object B; lid open vs closed; part present vs absent) and UNRELIABLE at counting events, timing, torque, and sub-millimeter alignment.
+
+For each step, mentally compare the scene at the END of the previous step to the scene at the END of this step and name the spatial change:
+- Write `completion_criteria` as a SINGLE standalone sentence describing how the scene LOOKS when done — verifiable from one frame without remembering the "before" frame. Name the objects and their relative configuration ("the glasses are now resting on top of the keyboard"), not the action ("put the glasses down").
+- Set `visual_verifiability`:
+  - `reliable` — a clear static spatial-configuration change detectable in one frame.
+  - `marginal` — a smaller or orientation-only change a vision model can sometimes miss.
+  - `none` — NO single-frame visual end-state (the step is counting presses, waiting, tightening, aligning finely). Before choosing `none`, hunt for a spatial PROXY for the RESULT (e.g. "the LED is now solid green" after N presses, "the panel is now flush") and use that with `reliable`/`marginal`. Only use `none` when no visual consequence exists — that step will be advanced verbally instead.
+
+For the per-step `error_criteria` field, produce UP TO THREE observable visual errors — only ones that genuinely exist for this step. An empty list is acceptable; never pad to three with paraphrases. Each must be a single full declarative sentence describing a visible STATE — never an action, intent, or judgment.
 
 HARD RULES — every error must pass all of these:
 - Describes a physical state visible in a single frame (or a couple of consecutive frames). Must NOT require counting events over time, measuring duration, or inferring what the learner meant.
@@ -37,7 +47,7 @@ HARD RULES — every error must pass all of these:
 - Contains NO judgment words ("careless", "sloppy", "wrong-ish"), NO cognitive claims ("seems confused", "distracted", "not paying attention"), NO abstract faults ("technique is off", "something is off", "not quite right"). These are not observable states.
 - The three errors are mutually distinct — no paraphrases of the same mistake with different wording.
 
-USEFUL TEMPLATE for the three errors (adapt if a category genuinely doesn't fit):
+USEFUL TEMPLATE for the errors (use the ones that fit; skip any that don't):
 (a) Target missing — e.g., "[the key object] is not visible in the camera view at all." Almost always applicable to hands-on tasks; include it unless the step is purely verbal or uses no anchoring object.
 (b) Wrong object state — the object IS visible but in a state that contradicts what this step requires (wrong orientation, wrong item in hand, closed-when-should-be-open, pre-condition not satisfied).
 (c) Wrong interaction — the learner is acting on the correct object in the wrong way (wrong button, wrong grip, wrong side, wrong direction of motion detectable across frames).
@@ -54,7 +64,7 @@ BAD examples — do NOT produce output in these shapes:
 - "The user seems confused." — cognitive claim, not visible.
 - "Something is wrong with how the mouse is being held." — vague, no specific wrong configuration.
 
-Output exactly three entries per step — no more, no fewer. These strings will be injected verbatim into a live coaching system prompt, so clarity and specificity directly determine whether the AI interjects correctly or hallucinates.
+Output at most three entries per step — fewer is fine, zero is fine when nothing distinct applies. These strings are handed to the verification model, so clarity and specificity directly determine whether the coach interjects correctly or hallucinates.
 
 Output JSON matching the GeminiVideoProcedureOutput schema. Field-level shape requirements (title format, description length, tips/warnings, completion_criteria observability) live in the response schema's field descriptions — follow those."""
 

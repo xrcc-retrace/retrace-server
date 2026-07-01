@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 import subprocess
@@ -8,7 +9,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from config import CLIPS_DIR, FFMPEG_PATH
-from services.clip_extractor import lens_variant_path, transcode_lens_variant
+from services.clip_extractor import (
+    extract_done_frame,
+    lens_variant_path,
+    transcode_lens_variant,
+)
 from services.database import (
     get_procedure,
     list_procedures,
@@ -41,6 +46,7 @@ class StepUpdateBody(BaseModel):
     timestamp_start: Optional[float] = None
     timestamp_end: Optional[float] = None
     error_criteria: Optional[list[str]] = None
+    visual_verifiability: Optional[str] = None
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +113,7 @@ async def update_step_endpoint(procedure_id: str, step_number: int, body: StepUp
         timestamp_start=body.timestamp_start,
         timestamp_end=body.timestamp_end,
         error_criteria=body.error_criteria,
+        visual_verifiability=body.visual_verifiability,
     ):
         raise HTTPException(404, "Step not found")
     return get_procedure(procedure_id)
@@ -182,3 +189,22 @@ async def get_clip_poster(procedure_id: str, step_number: int):
             raise HTTPException(500, "Failed to extract poster") from e
 
     return FileResponse(str(poster_path), media_type="image/jpeg")
+
+
+@router.get("/clips/{procedure_id}/step_{step_number}_done.jpg")
+async def get_clip_done_frame(procedure_id: str, step_number: int):
+    """Serve the last-frame ('done state') JPEG for a step's clip.
+
+    This is the canonical picture of what the scene looks like once the step
+    is complete. The verification oracle uses it for image-to-image grounding.
+    Extracted on demand (last frame of the clip) and cached beside the clip.
+    """
+    _validate_procedure_id(procedure_id)
+    clip_path = CLIPS_DIR / procedure_id / f"step_{step_number}.mp4"
+    if not clip_path.exists():
+        raise HTTPException(404, "Clip not found")
+
+    done_path = await asyncio.to_thread(extract_done_frame, clip_path)
+    if done_path is None:
+        raise HTTPException(500, "Failed to extract done frame")
+    return FileResponse(str(done_path), media_type="image/jpeg")

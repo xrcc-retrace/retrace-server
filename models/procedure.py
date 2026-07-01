@@ -24,6 +24,20 @@ CATEGORY_NAMES: tuple[str, ...] = (
     "Other",
 )
 
+# Per-step gate for the out-of-band visual-verification oracle. Set by Gemini
+# Pro at extraction time from the spatial delta between the end of the prior
+# step and the end of this step:
+#   reliable — a clear static spatial-configuration change detectable in one
+#              frame (object moved onto/into another, lid open↔closed, part
+#              present↔absent). Oracle polls; a single confident match advances.
+#   marginal — a smaller/orientation-only change that a VLM can sometimes miss.
+#              Oracle polls but requires sustained (multi-poll) confirmation.
+#   none     — no single-frame visual end-state exists (counting, timing,
+#              torque, sub-mm alignment). Oracle is NOT polled; the step is
+#              verbal-only (learner says "done").
+VisualVerifiability = Literal["reliable", "marginal", "none"]
+VISUAL_VERIFIABILITY_LEVELS: tuple[str, ...] = ("reliable", "marginal", "none")
+
 
 class ProcedureStep(BaseModel):
     step_number: int
@@ -34,10 +48,15 @@ class ProcedureStep(BaseModel):
     tips: list[str] = []
     warnings: list[str] = []
     completion_criteria: str = ""
-    # Observable visual error states the AI coach watches for during the
-    # heartbeat ([check]) path. Populated by Gemini 2.5 Pro during extraction
-    # and editable in the expert review flow.
+    # Observable visual error states the verification oracle watches for.
+    # Populated by Gemini 2.5 Pro during extraction and editable in the expert
+    # review flow.
     error_criteria: list[str] = []
+    # Gate for the out-of-band verification oracle (see VisualVerifiability).
+    # Defaults to "reliable" so legacy rows keep auto-advance behavior — the
+    # oracle is itself a second gate, so a poorly-specified legacy step simply
+    # never gets a positive verdict and falls back to verbal advancement.
+    visual_verifiability: VisualVerifiability = "reliable"
     clip_url: str | None = None
     clip_status: str = "ready"  # "ready" | "failed"
 
@@ -145,11 +164,15 @@ class _BaseProcedureStep(BaseModel):
     )
     completion_criteria: str = Field(
         description=(
-            "ONE observable end-state sentence written for VLM "
-            "verification from a head-mounted camera. AVOID criteria "
-            "that require counting events, measuring elapsed time, "
-            "text recognition, torque, or sub-millimeter alignment — "
-            "those aren't verifiable in a single camera frame."
+            "ONE standalone spatial end-state sentence describing how the "
+            "scene LOOKS once this step is done, verifiable from a single "
+            "head-mounted-camera frame WITHOUT needing to remember an "
+            "earlier frame. Prefer relational configuration of named "
+            "objects (X is now resting on top of Y; the tray is now out "
+            "of the slot; the lid is now open). AVOID criteria that "
+            "require counting events, measuring elapsed time, text "
+            "recognition, torque, or sub-millimeter alignment — those "
+            "aren't verifiable in a single frame."
         ),
     )
 
@@ -185,9 +208,12 @@ class GeminiVideoProcedureStep(_BaseProcedureStep):
     )
     completion_criteria: str = Field(
         description=(
-            "ONE observable end-state sentence describing what changed "
-            "visually from start to finish — written for VLM "
-            "verification from a head-mounted camera."
+            "ONE standalone spatial end-state sentence describing how the "
+            "scene LOOKS once this step is done, verifiable from a single "
+            "camera frame without remembering the 'before' frame. Name the "
+            "objects and their relative configuration (e.g. 'the glasses "
+            "are now resting on top of the keyboard', 'the drip tray is now "
+            "out of the base and sitting on the counter')."
         ),
     )
     timestamp_start: float = Field(
@@ -202,12 +228,28 @@ class GeminiVideoProcedureStep(_BaseProcedureStep):
     error_criteria: list[str] = Field(
         default=[],
         description=(
-            "Exactly THREE observable visual errors. Each is a single "
-            "declarative sentence describing a visible state (named "
-            "object plus named wrong configuration) that, if a camera "
-            "saw it during live coaching, should cause the AI to "
-            "interject. See PROCEDURE_PROMPT for the (a)/(b)/(c) "
-            "template and full hard rules."
+            "UP TO three observable visual errors — only include ones that "
+            "genuinely exist for this step; an empty list is acceptable. "
+            "Each is a single declarative sentence describing a visible "
+            "state (named object plus named wrong configuration) that, if a "
+            "camera saw it during live coaching, should cause the AI to "
+            "interject. Must be mutually distinct — never pad to three with "
+            "paraphrases. See PROCEDURE_PROMPT for the template and hard rules."
+        ),
+    )
+    visual_verifiability: VisualVerifiability = Field(
+        default="reliable",
+        description=(
+            "How reliably this step's completion can be confirmed from a "
+            "single camera frame, judged from the spatial delta between the "
+            "end of the prior step and the end of this step. 'reliable' = a "
+            "clear static spatial-configuration change (object moved onto/"
+            "into another, lid open↔closed, part present↔absent). 'marginal' "
+            "= a smaller or orientation-only change a VLM can miss. 'none' = "
+            "no single-frame visual end-state (counting presses, waiting, "
+            "torque, sub-mm alignment). Before choosing 'none', hunt for a "
+            "spatial PROXY for the result (e.g. 'the LED is now solid green' "
+            "after N presses) and prefer that."
         ),
     )
 
@@ -270,11 +312,24 @@ class GeminiManualProcedureStep(_BaseProcedureStep):
     error_criteria: list[str] = Field(
         default=[],
         description=(
-            "Exactly three observable visual errors a learner might make "
-            "on this step. Each is a single declarative sentence — named "
-            "object plus named wrong configuration, visible in a single "
-            "frame, no judgment words, no cognitive claims, no "
-            "counting. Mutually distinct."
+            "UP TO three observable visual errors a learner might make on "
+            "this step — only ones that genuinely exist; an empty list is "
+            "fine. Each is a single declarative sentence — named object "
+            "plus named wrong configuration, visible in a single frame, no "
+            "judgment words, no cognitive claims, no counting. Mutually "
+            "distinct — never pad with paraphrases."
+        ),
+    )
+    visual_verifiability: VisualVerifiability = Field(
+        default="reliable",
+        description=(
+            "How reliably this step's completion can be confirmed from a "
+            "single camera frame. 'reliable' = a clear static spatial or "
+            "LED-state change (lid open↔closed, tank present↔absent, LED "
+            "now solid green). 'marginal' = a smaller/orientation change a "
+            "VLM can miss. 'none' = no single-frame visual end-state "
+            "(counting presses, waiting a duration, torque). Prefer a "
+            "spatial/LED proxy over 'none' whenever the manual describes one."
         ),
     )
     source_page: int = Field(

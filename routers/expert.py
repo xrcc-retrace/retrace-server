@@ -10,7 +10,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from config import GEMINI_API_KEY, CLIPS_DIR, UPLOAD_DIR
 from models.procedure import ProcedureStep
 from services.gemini_processor import process_expert_video
-from services.clip_extractor import extract_clips
+from services.clip_extractor import extract_clips, transcode_lens_variant, upload_lens_variant_path
 from services.database import (
     create_procedure_placeholder,
     save_procedure,
@@ -93,6 +93,16 @@ async def _process_video(procedure_id: str, video_path: Path, actual_duration: f
             clip_paths = {}
             failed_steps = [s["step_number"] for s in clamped_steps]
 
+        # Pre-generate the bitrate-capped lens variant of the FULL recording so
+        # the "Watch full recording" lens button streams smoothly on first play
+        # (mirrors the per-step clip variant). Non-fatal; the /api/uploads
+        # ?profile=lens route regenerates on demand if this is missing.
+        asyncio.create_task(
+            asyncio.to_thread(
+                transcode_lens_variant, video_path, upload_lens_variant_path(video_path)
+            )
+        )
+
         # Build step data with clip URLs + per-step status
         failed_set = set(failed_steps)
         steps: list[ProcedureStep] = []
@@ -114,6 +124,7 @@ async def _process_video(procedure_id: str, video_path: Path, actual_duration: f
                 warnings=s.get("warnings", []),
                 completion_criteria=s.get("completion_criteria", ""),
                 error_criteria=s.get("error_criteria", []),
+                visual_verifiability=s.get("visual_verifiability", "reliable"),
                 clip_url=clip_url,
                 clip_status=clip_status,
             ))

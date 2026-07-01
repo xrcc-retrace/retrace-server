@@ -54,7 +54,7 @@ The phone holds a **direct WebSocket** to Gemini Live — voice and video never 
 - **Shared tool dispatcher** — both Learner and Troubleshoot register handlers with a single dispatcher at import time. The phone forwards tool calls; the server returns `{result: {...}}` for the phone to hand back to Gemini as `toolResponse`.
 - **Web-grounded Troubleshoot** — `web_search_for_fix` runs a two-step Gemini Pro pipeline (GoogleSearch grounding + structured-output JSON) that returns a fresh procedure with cited URLs. Replaced an earlier brittle PDF-fetch path.
 - **PDF manual ingest** — `/api/expert/manuals/upload` runs the same structured-output extraction over a PDF and rasterizes each step's source page to a PNG, written into `step.clip_url` so manual-sourced procedures plug into the same clip-serving endpoints as video-sourced ones.
-- **Iconify icon library** — `GET /{prefix}/{name}.png` serves any Iconify ID as a white-on-transparent PNG via cairosvg, disk-cached. The iOS HUD references icons without bundling assets.
+- **Iconify icon library** — `GET /api/icons/{prefix}/{name}.png` serves any Iconify ID as a white-on-transparent PNG via cairosvg, disk-cached. The iOS HUD references icons without bundling assets.
 - **Bonjour LAN discovery** — `_retrace._tcp.local.` advertised on port 8000; iOS auto-discovers when on the same Wi-Fi.
 - **Probe scripts + interactive playground** — `probe_*.py` family covers model enumeration, capability bisection, end-to-end config verification, tool-call HIT/MISS measurement, and system-prompt honoring canaries. `python -m gemini_live_playground` is a REPL against the same model + prompt + tools + compression + voice as production.
 
@@ -205,11 +205,11 @@ Server listens on `http://0.0.0.0:8000`.
 | `GET`  | `/api/expert/manuals/{manual_id}` | Poll ingest status. When ready, returns the resulting `procedure_id`. |
 | `GET`  | `/api/manual_images/{procedure_id}/step_{n}.png` | Rendered manual-page PNG used in place of an MP4 clip for manual-sourced procedures. |
 
-### Icons — `/{prefix}/{name}.png`
+### Icons — `/api/icons/{prefix}/{name}.png`
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/{prefix}/{name}.png` | Iconify icon (e.g. `/lucide/refrigerator.png`) rendered to a white-on-transparent PNG via `cairosvg`, disk-cached. |
+| `GET` | `/api/icons/{prefix}/{name}.png` | Iconify icon (e.g. `/api/icons/lucide/refrigerator.png`) rendered to a white-on-transparent PNG via `cairosvg`, disk-cached. |
 
 ### Procedures — `/api/procedures`
 
@@ -262,7 +262,7 @@ main-local-server-test/
 ├── routers/
 │   ├── expert.py              # POST /api/expert/upload — async pipeline, timestamp clamping, per-step bookkeeping
 │   ├── expert_manuals.py      # POST /api/expert/manuals/upload + GET /api/expert/manuals/{id} + GET /api/manual_images/{procedure_id}/step_{n}.png
-│   ├── icons.py               # GET /{prefix}/{name}.png — Iconify icon serving (white-on-transparent PNG, cached)
+│   ├── icons.py               # GET /api/icons/{prefix}/{name}.png — Iconify icon serving (white-on-transparent PNG, cached)
 │   ├── learner.py             # Voice list + session lifecycle (start, tool-call, state, context-summary, token refresh with ?handle=)
 │   ├── procedures.py          # CRUD for procedures / steps / clips
 │   └── troubleshoot.py        # Mode-parallel to learner; importing this router imports services.troubleshoot which registers handlers with the shared dispatcher

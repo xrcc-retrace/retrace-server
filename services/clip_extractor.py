@@ -16,6 +16,62 @@ def lens_variant_path(clip_path: Path) -> Path:
     return clip_path.with_name(f"{clip_path.stem}{LENS_VARIANT_SUFFIX}{clip_path.suffix}")
 
 
+def done_frame_path(clip_path: Path) -> Path:
+    """The 'done state' poster beside a clip (step_N.mp4 → step_N_done.jpg).
+
+    This is the LAST frame of the step clip — the canonical picture of what
+    the scene looks like once the step is complete. The verification oracle
+    compares the learner's live frame against it (image-to-image grounding).
+    Distinct from the first-frame poster step_N.jpg used as a thumbnail.
+    """
+    return clip_path.with_name(f"{clip_path.stem}_done.jpg")
+
+
+def extract_done_frame(clip_path: Path) -> Path | None:
+    """Extract + disk-cache the last frame of a clip as a JPEG.
+
+    Returns the cached path, or None if extraction failed / the clip is
+    missing. `-sseof -1.0` decodes only the final ~1s of the clip and
+    `-update 1` overwrites the output for each decoded frame, so the file
+    left behind is the true last frame — cheap and robust for short clips.
+    """
+    if not clip_path.exists():
+        return None
+    dst = done_frame_path(clip_path)
+    if dst.exists():
+        return dst
+    try:
+        subprocess.run(
+            [
+                FFMPEG_PATH, "-y",
+                "-sseof", "-1.0",
+                "-i", str(clip_path),
+                "-update", "1",
+                "-q:v", "2",
+                str(dst),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=15,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        stderr = getattr(e, "stderr", b"") or b""
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        logger.error("Done-frame extraction failed for %s: %s", clip_path.name, stderr[-300:])
+        return None
+    return dst if dst.exists() else None
+
+
+def upload_lens_variant_path(src: Path) -> Path:
+    """The lens-variant path for a full source upload ({uuid}.ext → {uuid}_lens.mp4).
+
+    Full uploads may be .mov; transcode_lens_variant always emits H.264/AAC+faststart,
+    so force a .mp4 container for the variant (the lens VideoPlayer uses codec: .mp4).
+    """
+    return src.with_name(f"{src.stem}{LENS_VARIANT_SUFFIX}.mp4")
+
+
 def transcode_lens_variant(src_mp4: Path, dst_mp4: Path) -> bool:
     """Transcode a full-res step clip into a small, bitrate-capped lens variant.
 
@@ -38,9 +94,12 @@ def transcode_lens_variant(src_mp4: Path, dst_mp4: Path) -> bool:
         "-preset", "fast",
         "-crf", "28",
         # Hard bitrate ceiling — the real lever for BT-link transfer time.
-        "-maxrate", "800k",
-        "-bufsize", "1600k",
-        "-r", "20",
+        # Capped at 350k to keep the peak stream under what the Bluetooth
+        # Display link sustains; above this, busy-scene bitrate spikes starve
+        # the on-glasses buffer and the clip stutters/freezes mid-playback.
+        "-maxrate", "350k",
+        "-bufsize", "700k",
+        "-r", "15",
         # Same iOS-compat flags as extract_clips (negative-DTS / color SEI).
         "-bf", "0",
         "-pix_fmt", "yuv420p",
@@ -55,7 +114,7 @@ def transcode_lens_variant(src_mp4: Path, dst_mp4: Path) -> bool:
         str(dst_mp4),
     ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=120)
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         stderr = getattr(e, "stderr", "") or ""
         logger.error("Lens-variant transcode failed for %s: %s", src_mp4.name, stderr[-500:])
@@ -155,5 +214,10 @@ async def extract_clips(
         await asyncio.to_thread(
             transcode_lens_variant, output_path, lens_variant_path(output_path)
         )
+
+        # Pre-generate the "done state" last-frame poster the verification
+        # oracle grounds against. Non-fatal: extract_done_frame regenerates on
+        # demand at /verify time if this is missing.
+        await asyncio.to_thread(extract_done_frame, output_path)
 
     return clip_paths, failed

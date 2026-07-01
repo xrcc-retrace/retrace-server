@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Backfill the lens-optimized clip variant (step_N_lens.mp4) for existing clips.
+"""Backfill the lens-optimized variants for existing per-step clips AND full uploads.
 
-The native glasses lens streams a small, bitrate-capped variant of each step
-clip (served at GET /api/clips/{id}/step_{n}.mp4?profile=lens). New procedures
-generate it at extraction time; this one-shot fills it in for clips created
-before the variant existed, so the first on-glasses view of any clip is already
-fast instead of paying an on-demand transcode.
+The native glasses lens streams a small, bitrate-capped variant over the
+Bluetooth link — for per-step clips (GET /api/clips/{id}/step_{n}.mp4?profile=lens)
+and for the full source recording behind the "Watch full recording" button
+(GET /api/uploads/{filename}?profile=lens). New procedures generate both at
+processing time; this one-shot fills them in for procedures created before the
+variants existed, so the first on-glasses view is already fast instead of paying
+an on-demand transcode.
 
-Walks CLIPS_DIR/*/step_*.mp4 (skipping the *_lens.mp4 outputs) and transcodes a
-variant beside each one via services.clip_extractor.transcode_lens_variant.
+Walks CLIPS_DIR/*/step_*.mp4 and UPLOAD_DIR/* (skipping the *_lens outputs) and
+transcodes a variant beside each via services.clip_extractor.transcode_lens_variant.
 Idempotent — already-present variants are skipped unless --force.
 
 Usage:
@@ -23,12 +25,15 @@ import argparse
 import logging
 import sys
 
-from config import CLIPS_DIR
+from config import CLIPS_DIR, UPLOAD_DIR
 from services.clip_extractor import (
     LENS_VARIANT_SUFFIX,
     lens_variant_path,
     transcode_lens_variant,
+    upload_lens_variant_path,
 )
+
+_UPLOAD_VIDEO_EXTS = {".mp4", ".mov", ".m4v"}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,40 +57,63 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def main() -> int:
-    args = parse_args()
-
-    if not CLIPS_DIR.exists():
-        logger.error("Clips directory not found at %s", CLIPS_DIR)
-        return 2
-
-    # Full clips only — skip the *_lens.mp4 outputs themselves.
-    clips = sorted(
-        p for p in CLIPS_DIR.glob("*/step_*.mp4")
-        if not p.stem.endswith(LENS_VARIANT_SUFFIX)
-    )
-    if not clips:
-        logger.info("No clips found under %s — nothing to backfill.", CLIPS_DIR)
-        return 0
-
+def _backfill(sources, dst_for, label_for, args) -> tuple[int, int, int]:
+    """Transcode a lens variant for each source. Returns (generated, skipped, failed)."""
     generated = skipped = failed = 0
-    for clip in clips:
-        dst = lens_variant_path(clip)
-        rel = f"{clip.parent.name}/{clip.name}"
-
+    for src in sources:
+        dst = dst_for(src)
         if dst.exists() and not args.force:
             skipped += 1
             continue
-
         if args.dry_run:
-            logger.info("[would generate] %s → %s", rel, dst.name)
+            logger.info("[would generate] %s → %s", label_for(src), dst.name)
             generated += 1
             continue
-
-        if transcode_lens_variant(clip, dst):
+        if transcode_lens_variant(src, dst):
             generated += 1
         else:
             failed += 1
+    return generated, skipped, failed
+
+
+def main() -> int:
+    args = parse_args()
+
+    generated = skipped = failed = 0
+
+    # Per-step clips — skip the *_lens.mp4 outputs themselves.
+    if CLIPS_DIR.exists():
+        clips = sorted(
+            p for p in CLIPS_DIR.glob("*/step_*.mp4")
+            if not p.stem.endswith(LENS_VARIANT_SUFFIX)
+        )
+        g, s, f = _backfill(
+            clips,
+            dst_for=lens_variant_path,
+            label_for=lambda p: f"{p.parent.name}/{p.name}",
+            args=args,
+        )
+        generated += g; skipped += s; failed += f
+    else:
+        logger.warning("Clips directory not found at %s — skipping clips.", CLIPS_DIR)
+
+    # Full source recordings (for the "Watch full recording" lens button).
+    if UPLOAD_DIR.exists():
+        uploads = sorted(
+            p for p in UPLOAD_DIR.iterdir()
+            if p.is_file()
+            and p.suffix.lower() in _UPLOAD_VIDEO_EXTS
+            and not p.stem.endswith(LENS_VARIANT_SUFFIX)
+        )
+        g, s, f = _backfill(
+            uploads,
+            dst_for=upload_lens_variant_path,
+            label_for=lambda p: p.name,
+            args=args,
+        )
+        generated += g; skipped += s; failed += f
+    else:
+        logger.warning("Upload directory not found at %s — skipping uploads.", UPLOAD_DIR)
 
     if args.dry_run:
         logger.info("Dry run complete. Would generate %d variant(s); %d already present.",

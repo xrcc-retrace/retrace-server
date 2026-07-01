@@ -17,11 +17,12 @@ logger = logging.getLogger(__name__)
 def _advance_step_description() -> str:
     examples = vc.format_utterance_examples("next_step")
     return (
-        "Call this the moment the learner finishes the current step. Set `trigger` "
-        f"to 'verbal' if they told you they're done ({examples}), or 'visual' if you "
-        "detected the completion criteria from the camera. Follow the STEP "
-        "PROGRESSION rules in the system prompt for when each trigger is allowed. "
-        "Call it on every step, including the very last one — always."
+        "Call this when the learner TELLS you they've finished the current step "
+        f"({examples}). Always set `trigger` to 'verbal'. Do NOT try to advance "
+        "from what you see on camera — visual completion is detected for you "
+        "automatically and arrives as an [ADVANCE] message; your job is only the "
+        "spoken 'done'. Call it on every step the learner reports finishing, "
+        "including the very last one."
     )
 
 
@@ -55,10 +56,9 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "enum": ["verbal", "visual"],
                     "description": (
-                        "'verbal' if the learner said they're done; 'visual' if you "
-                        "detected completion from the camera. A 'visual' advance is "
-                        "only accepted when active monitoring and auto-advance are "
-                        "both on — otherwise wait for the learner to say so."
+                        "Always 'verbal' — you call this tool only when the learner "
+                        "says they're done. Visual completion is detected out-of-band "
+                        "by the system, not by you, so you never pass 'visual'."
                     ),
                 },
             },
@@ -190,9 +190,11 @@ Mistake interjection: short and urgent, then the fix. "Hold on — you're turnin
 def _step_progression_auto() -> str:
     next_examples = vc.format_utterance_examples("next_step")
     return f"""=== STEP PROGRESSION ===
-Call advance_step to move to the next step. Trigger it on either signal: the learner says they're done ({next_examples}), OR you visually confirm the completion criteria are met. Either is enough — you do not need both. Call advance_step every time, including on the final step.
+Steps advance two ways, and you handle only one of them:
+- When the learner SAYS they're done ({next_examples}), call advance_step with trigger="verbal".
+- When the system VISUALLY detects the step is complete, it sends you an [ADVANCE] message on its own — you do not watch for this or call the tool for it. Just coach from that message when it arrives (see EVENT SIGNALS).
 
-You only know the current step. When advance_step returns, the response gives you the next step's instructions (status="advanced") or a procedure-complete message (status="completed"). Speak from that response. Until then, you have no information about future steps — never describe or hint at them.
+You only know the current step. Whether the next step arrives via an advance_step response (status="advanced") or an [ADVANCE] message, speak from what it gives you. Until then you have no information about future steps — never describe or hint at them.
 
 Use get_reference_clip when the learner asks to see the expert's video.
 Use go_to_step when the learner asks to jump to a specific step number, or to re-read the current step (pass the current step number)."""
@@ -215,63 +217,57 @@ _STEP_PROGRESSION_MANUAL = _step_progression_manual()
 
 
 def _visual_monitoring(auto_advance: bool, active_monitoring: bool) -> str:
-    """Build the proactive-monitoring section, gated by the two toggles.
+    """Build the EVENT SIGNALS section, gated by the two toggles.
 
-    active_monitoring=False  → REACTIVE mode: no heartbeat is sent by the phone,
-        so this just instructs the model to stay reactive (no proactive comments,
-        no visual advance). The Active/Passive toggle is the master switch.
-    active_monitoring=True, auto_advance=True  → full heartbeat protocol: error
-        interjection AND visual step advance.
-    active_monitoring=True, auto_advance=False → error interjection only; visual
-        advance is explicitly forbidden (advancement is verbal-only).
+    Visual verification (both step completion and error detection) now runs
+    OUT OF BAND in a dedicated server-side model, not inside Gemini Live. That
+    model watches the learner's camera and, only when it's confident, injects a
+    tagged internal message into this session:
+
+      [ADVANCE] …   — the current step is visually complete; coach the next one.
+      [CORRECTION] … — a mistake is visible; relay the fix.
+
+    Because these arrive only on a confirmed event, the model should always act
+    on them (no silence-vs-hallucinate judgment — that decision already happened
+    upstream). This replaces the old `[check]` heartbeat, which asked Live to do
+    the watching itself and hallucinated on empty scenes.
+
+    active_monitoring=False → no signals are sent; purely reactive.
+    active_monitoring=True, auto_advance=True  → both [ADVANCE] and [CORRECTION].
+    active_monitoring=True, auto_advance=False → [CORRECTION] only.
     """
     if not active_monitoring:
         return """=== REACTIVE MODE ===
-You can see the learner's camera feed, but you are in REACTIVE mode. Respond only when the learner speaks to you. Do NOT proactively comment on what you see, do NOT send unprompted progress updates, and do NOT advance steps on your own. Advance only when the learner tells you they're done — call advance_step with trigger="verbal". Otherwise stay silent and let them work."""
+You can see the learner's camera feed for context, but you are in REACTIVE mode. Respond only when the learner speaks to you. Do NOT proactively comment on what you see or send unprompted updates. Advance only when the learner tells you they're done — call advance_step with trigger="verbal". Otherwise stay silent and let them work."""
 
-    # Active monitoring — the phone sends the `[check]` heartbeat. The completion
-    # bullet differs by auto_advance: visual advance only when auto_advance is on.
+    advance_bullet = ""
     if auto_advance:
-        completion_bullet = (
-            '- If the step\'s completion criteria appear clearly met AND have persisted '
-            'across multiple moments, call `advance_step` with trigger="visual". '
-            '`[check]` is the primary moment for visual advance — do not wait for the '
-            'learner to say "done" if you can see the step is complete.'
-        )
-    else:
-        completion_bullet = (
-            '- Do NOT advance the step from what you see. Auto-advance is OFF for this '
-            'session: advancement happens only when the learner says they\'re done '
-            '(then you call `advance_step` with trigger="verbal"). Even if the '
-            'completion criteria look clearly met on `[check]`, stay silent and do not '
-            'call advance_step.'
+        advance_bullet = (
+            '\n- `[ADVANCE] …` — the current step is done and the message names the '
+            'NEXT step. Give a brief, warm acknowledgement and flow straight into '
+            'coaching that next step from the details in the message. Do NOT call '
+            'advance_step yourself for this — the step has already advanced. Do NOT '
+            'recap what they just finished.'
         )
 
-    return f"""=== VISUAL MONITORING (heartbeat + silence protocol) ===
-You can see the learner's camera feed. The iOS client sends you a short internal marker — the exact string `[check]` — every few seconds while the learner is working silently. Treat `[check]` as an **internal diagnostic signal, not user speech**.
-
-On each `[check]`:
-- Silently compare the current camera frame to both the OBSERVABLE ERRORS list and the completion criteria inside the CURRENT STEP block.
-- If a listed OBSERVABLE ERROR is visible AND has persisted across multiple moments (not a fleeting frame), speak ONE short corrective sentence referring to what you see. Example shape: short, directive, no hedging.
-{completion_bullet}
-- Otherwise, produce NO output at all. No audio, no text, no acknowledgement. A silent turn on `[check]` is the correct default — it means everything looks fine and the step is still in progress.
+    return f"""=== EVENT SIGNALS ===
+A separate system watches the learner's camera for you, so you never have to decide from the video whether a step is done or a mistake happened. When — and only when — it is confident, it injects a short internal message that begins with a bracketed tag. These are internal signals, NOT the learner speaking. Act on them immediately; they are already verified.{advance_bullet}
+- `[CORRECTION] …` — a mistake is visible on camera and the message states it. Speak ONE short, direct corrective sentence about what to fix. No hedging, no preamble ("hold on — that tray goes in the other way"). Then let them keep working.
 
 Hard rules:
-- Never read the word `[check]` or the brackets out loud.
-- Never respond to `[check]` conversationally (no "sure, checking now", no "looks good", no "got it").
-- Never narrate the scene or invent details you do not clearly see — if you're not sure, stay silent.
-- Never comment on what the learner is doing correctly. Silence is the acknowledgement.
+- Never read a bracket tag (`[ADVANCE]`, `[CORRECTION]`) or its brackets out loud — speak only the human-facing content.
+- Never treat these as the learner's words or answer them conversationally ("sure", "got it, checking").
+- If the learner starts speaking while you're relaying a correction, stop and listen — barge-in wins.
 
-Everything else (the learner's spoken questions, step completions, `advance_step` responses, barge-in) behaves normally. The silence rule applies only to the `[check]` path."""
+Everything else (the learner's spoken questions, verbal step completions, advance_step responses, barge-in) behaves normally."""
 
 
-# TRANSITIONAL: _ERROR_CRITERIA_OVERRIDES is the legacy fallback from before
-# the `error_criteria` DB column existed. The primary source is now
-# `step["error_criteria"]` populated by Gemini 2.5 Pro at extraction time (or
-# backfilled via scripts/backfill_error_criteria.py for pre-migration
-# procedures). This dict is only consulted when step["error_criteria"] is
-# empty — safe to delete after all production procedures have been backfilled
-# or re-extracted.
+# TRANSITIONAL: _ERROR_CRITERIA_OVERRIDES is the legacy seed dict from before
+# the `error_criteria` DB column existed. It is no longer read by the prompt —
+# error_criteria are now consumed server-side by the verification oracle
+# (services/step_oracle.py), not embedded in the Live prompt. The only
+# remaining consumer is scripts/backfill_error_criteria.py, which seeds the DB
+# column for pre-migration procedures. Safe to delete once those are backfilled.
 _ERROR_CRITERIA_OVERRIDES: dict[tuple[str, int], list[str]] = {
     ("af2fd4ae-2d1a-4170-9f97-4291afecfb89", 1): [
         "No mouse is visible in the camera view at all.",
@@ -298,20 +294,9 @@ def _format_current_step(step: dict, procedure_id: str = "") -> str:
     text += f"Short form (use this when telling them what to do): {step['title']}\n"
     text += f"Long form (use only if asked how, or if they seem stuck): {step['description']}\n"
     if step.get("completion_criteria"):
-        text += f"What done looks like (for your own eyes, do not recite): {step['completion_criteria']}\n"
-    # Prefer the DB column (populated by Gemini at extraction time). Fall back
-    # to the hardcoded override dict for procedures that predate the column
-    # and haven't been backfilled yet.
-    errors = step.get("error_criteria") or _ERROR_CRITERIA_OVERRIDES.get(
-        (procedure_id, step["step_number"]), [],
-    )
-    if errors:
-        text += (
-            "OBSERVABLE ERRORS (evaluate the current frame against these on every `[check]`; "
-            "interject only if one is clearly present and persists):\n"
-        )
-        for e in errors:
-            text += f"  - {e}\n"
+        # Context only — the out-of-band verifier decides completion and injects
+        # [ADVANCE]. This just helps the model answer "am I done yet?" verbally.
+        text += f"What finishing this step looks like (context, do not recite): {step['completion_criteria']}\n"
     if step.get("tips"):
         text += "Tips (offer one at a time, only if asked or stuck): " + "; ".join(step["tips"]) + "\n"
     if step.get("warnings"):

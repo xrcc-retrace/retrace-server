@@ -75,6 +75,9 @@ def init_db():
         ("completion_criteria", "TEXT NOT NULL DEFAULT ''"),
         ("clip_status", "TEXT NOT NULL DEFAULT 'ready'"),
         ("error_criteria", "TEXT NOT NULL DEFAULT '[]'"),
+        # Per-step gate for the verification oracle: 'reliable' | 'marginal' |
+        # 'none'. Legacy rows default to 'reliable' (see models.procedure).
+        ("visual_verifiability", "TEXT NOT NULL DEFAULT 'reliable'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE steps ADD COLUMN {col} {definition}")
@@ -153,11 +156,11 @@ def save_procedure(procedure: dict, steps: list[dict]):
                 """INSERT INTO steps (procedure_id, step_number, title, description,
                                       timestamp_start, timestamp_end, tips, warnings,
                                       completion_criteria, error_criteria,
-                                      clip_url, clip_status)
+                                      visual_verifiability, clip_url, clip_status)
                    VALUES (:procedure_id, :step_number, :title, :description,
                            :timestamp_start, :timestamp_end, :tips, :warnings,
                            :completion_criteria, :error_criteria,
-                           :clip_url, :clip_status)""",
+                           :visual_verifiability, :clip_url, :clip_status)""",
                 {
                     "procedure_id": procedure["id"],
                     "step_number": step["step_number"],
@@ -169,6 +172,7 @@ def save_procedure(procedure: dict, steps: list[dict]):
                     "warnings": json.dumps(step.get("warnings", [])),
                     "completion_criteria": step.get("completion_criteria", ""),
                     "error_criteria": json.dumps(step.get("error_criteria", [])),
+                    "visual_verifiability": step.get("visual_verifiability", "reliable") or "reliable",
                     "clip_url": step.get("clip_url"),
                     "clip_status": step.get("clip_status", "ready"),
                 },
@@ -294,7 +298,8 @@ def update_step_fields(procedure_id: str, step_number: int,
                        tips: list[str] | None = None, warnings: list[str] | None = None,
                        timestamp_start: float | None = None,
                        timestamp_end: float | None = None,
-                       error_criteria: list[str] | None = None) -> bool:
+                       error_criteria: list[str] | None = None,
+                       visual_verifiability: str | None = None) -> bool:
     """Update step fields. Returns True if found."""
     conn = _get_conn()
     try:
@@ -339,6 +344,11 @@ def update_step_fields(procedure_id: str, step_number: int,
             conn.execute(
                 "UPDATE steps SET error_criteria = ? WHERE procedure_id = ? AND step_number = ?",
                 (json.dumps(error_criteria), procedure_id, step_number),
+            )
+        if visual_verifiability is not None:
+            conn.execute(
+                "UPDATE steps SET visual_verifiability = ? WHERE procedure_id = ? AND step_number = ?",
+                (visual_verifiability, procedure_id, step_number),
             )
 
         conn.commit()

@@ -287,10 +287,13 @@ async def research_and_extract(
             "tips": s.tips,
             "warnings": s.warnings,
             "completion_criteria": s.completion_criteria,
-            # error_criteria are heartbeat-path inputs that need a real
-            # source frame to anchor against. Web procedures have none,
-            # so we emit an empty list and the heartbeat path no-ops.
+            # error_criteria are oracle inputs that need a real source frame
+            # to anchor against. Web procedures have none, so we emit an empty
+            # list and the oracle interjection path no-ops.
             "error_criteria": [],
+            # No source frame at all → the verification oracle can't ground a
+            # comparison, so every web step is verbal-only (learner says done).
+            "visual_verifiability": "none",
             # No clip and no PDF page; learner endpoints render text-only.
             "clip_url": None,
             "clip_status": "none",

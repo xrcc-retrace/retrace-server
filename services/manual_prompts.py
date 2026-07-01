@@ -38,7 +38,9 @@ Rules:
 3. For each step's `source_bbox`: crop ONLY the small illustration positioned with this step's numbered text — NOT the whole page, NOT a neighboring step's figure. Add about 5% padding on each side so the crop has visual breathing room. If this step has no figure (e.g. a purely textual instruction like "wait 30 seconds") or you cannot confidently isolate one figure for it, return {{x:0, y:0, w:0, h:0}} and the pipeline will skip the image for this step. Do NOT guess — a wrong bbox is worse than no image.
 4. Title the procedure: "{product_name} — <2-5 word task summary>". Pick the most natural English summary (e.g., "Descaling", "Filter Replacement", "First-time Setup").
 
-Field-level shape requirements (per-step title, description, tips, warnings, completion_criteria, error_criteria, step cap) live in the response schema (GeminiManualProcedureOutput) — follow the field descriptions there.
+A separate vision model later confirms each step by comparing the learner's live camera frame to `completion_criteria`, so write that field as a single standalone spatial/LED end-state and set `visual_verifiability` (reliable / marginal / none) per its field description — use `none` only when the step has no single-frame visual consequence.
+
+Field-level shape requirements (per-step title, description, tips, warnings, completion_criteria, error_criteria, visual_verifiability, step cap) live in the response schema (GeminiManualProcedureOutput) — follow the field descriptions there.
 
 Output JSON matching the GeminiManualProcedureOutput schema."""
 
@@ -55,6 +57,8 @@ Rules:
 2. For each step's `source_bbox`: crop ONLY this step's illustration on source_page, NOT the whole page or a neighboring step's figure. Add about 5% padding on each side. If this step has no figure or you cannot confidently isolate one, return {{x:0, y:0, w:0, h:0}} and the pipeline will skip the image. Do NOT guess.
 3. Title the procedure: "{product_name} — {focus_title}" where focus_title summarizes the problem in 3-5 words.
 
-Field-level shape requirements (per-step title, description, tips, warnings, completion_criteria, error_criteria, step cap) live in the response schema (GeminiManualProcedureOutput) — follow the field descriptions there.
+A separate vision model later confirms each step by comparing the learner's live camera frame to `completion_criteria`, so write that field as a single standalone spatial/LED end-state and set `visual_verifiability` (reliable / marginal / none) per its field description — use `none` only when the step has no single-frame visual consequence.
+
+Field-level shape requirements (per-step title, description, tips, warnings, completion_criteria, error_criteria, visual_verifiability, step cap) live in the response schema (GeminiManualProcedureOutput) — follow the field descriptions there.
 
 Output JSON matching the GeminiManualProcedureOutput schema."""

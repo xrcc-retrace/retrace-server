@@ -3,6 +3,7 @@ import os
 import socket
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +13,8 @@ from zeroconf import ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
 
 from config import UPLOAD_DIR
-from routers import expert, expert_manuals, icons, learner, procedures, troubleshoot
+from services.clip_extractor import transcode_lens_variant, upload_lens_variant_path
+from routers import ask_ai, expert, expert_manuals, icons, learner, procedures, troubleshoot
 from services.database import init_db
 from services.fixtures import schedule_fixtures_load
 
@@ -159,6 +161,7 @@ app.include_router(icons.router)
 app.include_router(learner.router)
 app.include_router(procedures.router)
 app.include_router(troubleshoot.router)
+app.include_router(ask_ai.router)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -169,11 +172,22 @@ async def health():
 
 
 @app.get("/api/uploads/{filename}")
-async def get_upload(filename: str):
-    """Serve uploaded source videos for review playback."""
+async def get_upload(filename: str, profile: Optional[str] = None):
+    """Serve uploaded source videos for review playback.
+
+    `?profile=lens` serves the bitrate-capped variant the glasses lens streams
+    over the Bluetooth link (mirrors the clip `?profile=lens` path). The variant
+    is generated on demand and cached beside the source; on transcode failure we
+    fall through to the raw upload.
+    """
     file_path = UPLOAD_DIR / filename
     if not file_path.exists():
         raise HTTPException(404, "Upload not found")
+    if profile == "lens":
+        lens_path = upload_lens_variant_path(file_path)
+        if lens_path.exists() or transcode_lens_variant(file_path, lens_path):
+            return FileResponse(str(lens_path), media_type="video/mp4")
+        logger.warning("Lens variant unavailable for %s; serving raw upload", filename)
     media_type = "video/quicktime" if filename.endswith(".mov") else "video/mp4"
     return FileResponse(str(file_path), media_type=media_type)
 
