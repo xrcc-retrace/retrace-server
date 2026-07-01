@@ -51,6 +51,9 @@ The phone holds a **direct WebSocket** to Gemini Live — voice and video never 
 - **Direct-to-Gemini ephemeral tokens** — `v1alpha auth_tokens` minted server-side, locked to a specific model + system prompt + tool set + voice + transcription + compression + resumption handle. The phone never sees the API key.
 - **Indefinite session length** — context-window compression (trigger 100k → target 40k) plus session resumption via `sessionResumptionUpdate.new_handle`. The "2-minute audio+video" Gemini cap is a context-fill limit, not a hard timer.
 - **Current-step-only system prompt** — only the current step is embedded; future steps reach the model exclusively through `advance_step` tool responses. Prevents narration-ahead and forces the tool call. Re-anchors on the session's current step on token refresh / resumption.
+- **Out-of-band verification oracle** — visual step completion is decided by a separate `gemini-2.5-flash` oracle (`services/step_oracle.py`), **not** inside Gemini Live. The phone polls `POST /session/{id}/verify` with a camera frame every ~4 s; the oracle compares it against the step's `completion_criteria` + `error_criteria`, grounded image-to-image on the expert clip's last frame (`step_N_done.jpg`), biased against false positives. On a confirmed completion the server advances itself (`method="visual"`); on a visible mistake it returns a correction. The phone injects the result into Live as an `[ADVANCE]`/`[CORRECTION]` turn — always a verified event, never a hallucinated one. A per-step `visual_verifiability` gate (`reliable|marginal|none`) decides whether the oracle runs at all; `none` steps (counting/timing/torque) stay verbal-only.
+- **Proactive error interjection (Interject)** — each step carries `error_criteria` (observable wrong-states) that the same `/verify` poll tests every cycle; a clear match returns `error_text` the phone speaks as a `[CORRECTION]`. Stays alive even on verbal-only steps.
+- **Procedure metadata** — `services/metadata_picker.py` runs a cheap Flash call (`thinking_budget=0`) at the end of every generation flow to pick an Iconify `icon_symbol` + a closed-enum `category` for each procedure.
 - **Shared tool dispatcher** — both Learner and Troubleshoot register handlers with a single dispatcher at import time. The phone forwards tool calls; the server returns `{result: {...}}` for the phone to hand back to Gemini as `toolResponse`.
 - **Web-grounded Troubleshoot** — `web_search_for_fix` runs a two-step Gemini Pro pipeline (GoogleSearch grounding + structured-output JSON) that returns a fresh procedure with cited URLs. Replaced an earlier brittle PDF-fetch path.
 - **PDF manual ingest** — `/api/expert/manuals/upload` runs the same structured-output extraction over a PDF and rasterizes each step's source page to a PNG, written into `step.clip_url` so manual-sourced procedures plug into the same clip-serving endpoints as video-sourced ones.
@@ -102,8 +105,18 @@ iOS app --[POST tool_name, arguments]--> /api/learner/session/{id}/tool-call
        <--[{result: {...}}]-------------
                                     │ (phone unwraps result, sends back to Gemini as toolResponse)
                                     ▼
-                       Gemini continues speaking / listening / watching
+                       Gemini continues speaking / listening
+
+   (~every 4 s, in parallel — Active mode only)
+iOS app --[POST camera JPEG]-----------> /api/learner/session/{id}/verify
+       <--[skip | pending | error | advanced | completed]---
+                                    │ (Flash oracle vs completion_criteria + error_criteria;
+                                    │  server advances itself on a confirmed completion)
+                                    ▼
+       phone injects an [ADVANCE] / [CORRECTION] turn into the Live socket
 ```
+
+`advance_step` fired by Gemini is now **verbal-only** (learner says "done"). Visual advance + error interjection run **out-of-band** through the `/verify` oracle above — Live never decides completion from the video itself. The iOS app collapses this into one **Active/Passive** toggle: Active polls `/verify` (visual auto-advance + interjection); Passive doesn't poll and is fully reactive / verbal-only. The client always sends `active_monitoring` and `auto_advance` equal.
 
 On `goAway` or socket error the iOS client calls `POST /session/{id}/token?handle=<sessionResumptionUpdate.new_handle>` to mint a token that reopens the prior session with compressed context intact, then injects `GET /session/{id}/context-summary` as a user turn so the model re-orients on the real current step.
 
@@ -136,7 +149,7 @@ Mode-parallel to learner — own router, own session dict, own prompt builder, b
 The cross-cutting Retrace decisions live in the **[org profile README](https://github.com/xrcc-retrace)**. The ones specific to this server:
 
 1. **Voice + video go direct** — phone → Gemini Live, never through this server. The 100–200 ms server hop kills conversational feel. The backend is strictly the control plane.
-2. **Visual verification runs inline in Gemini Live** — not as a separate server-side pass. The model sees the camera feed alongside audio, watches for each step's `completion_criteria`, and fires `advance_step` via function calling. `auto_advance=True` tags completions as `method="visual"`; manual mode is `"verbal"`. A Gemini 2.5 Pro REST clip-to-clip fallback is deferred unless inline detection proves unreliable.
+2. **Visual verification runs out-of-band in a Gemini Flash oracle** — not inside Gemini Live. Live stays conversation-only (it keeps a low-res feed for the learner's visual questions but never decides completion — inline detection hallucinated on empty scenes). The phone polls `POST /session/{id}/verify` with a camera frame every ~4 s; `services/step_oracle.py` (`gemini-2.5-flash`, `RETRACE_ORACLE_MODEL`) compares it against the step's `completion_criteria` — grounded image-to-image on the expert clip's last frame (`step_N_done.jpg`) — plus its `error_criteria`, biased against false positives. On a confirmed completion the server advances itself (`method="visual"`); on a visible mistake it returns `error_text`. The phone injects an `[ADVANCE]`/`[CORRECTION]` turn into Live. A per-step `visual_verifiability` gate (`reliable|marginal|none`) decides whether the oracle runs (dwell: reliable=1, marginal=2 consecutive frames; `none`=verbal-only). The endpoint enforces the toggles: advance only when `active_monitoring AND auto_advance AND verifiability!=none`; interjection stays alive whenever `active_monitoring`. The old inline `advance_step` visual path + `[check]` heartbeat are gone.
 3. **Audio + video share one Live session.** Context compression + session resumption unlock indefinite duration. The "2-minute audio+video" Gemini limit is a context-fill limit, not a hard timer.
 4. **Current-step-only system prompt.** Future-step details are delivered exclusively through `advance_step` tool responses. Prevents the model from narrating ahead. On token refresh / resumption, the prompt is re-anchored on `session["current_step"]` so a reopened socket doesn't act like step 1.
 5. **Tool calling is the model↔server channel.** Gemini issues function calls; the phone intercepts, injects `session_id`, and forwards to `/tool-call`. Server handler result is wrapped as `{result: {...}}`; the phone unwraps before handing back to Gemini.
@@ -182,6 +195,7 @@ Server listens on `http://0.0.0.0:8000`.
 | `GEMINI_API_KEY` | — | **Required.** Google Gemini API key. |
 | `RETRACE_ADVERTISE_BONJOUR` | `1` | Set to `0` on cloud deploys (VPC doesn't support multicast; suppresses noisy startup). |
 | `RETRACE_LIVE_MODEL` | `gemini-3.1-flash-live-preview` | Override the Live model for a fast rollback. |
+| `RETRACE_ORACLE_MODEL` | `gemini-2.5-flash` | Override the out-of-band visual-verification oracle model. |
 
 ---
 
@@ -221,15 +235,18 @@ Server listens on `http://0.0.0.0:8000`.
 | `PUT` | `/api/procedures/{id}/steps/{n}` | Update a single step's fields. |
 | `DELETE` | `/api/procedures/{id}` | Delete procedure + cascade steps. |
 | `GET` | `/api/clips/{id}/step_{n}.mp4` | Per-step clip (H.264+AAC, faststart). |
+| `GET` | `/api/clips/{id}/step_{n}.jpg` | On-demand, disk-cached first-frame JPEG poster (lens thumbnail — the lens can't take raw video frames). |
+| `GET` | `/api/clips/{id}/step_{n}_done.jpg` | On-demand, disk-cached **last-frame** "done state" JPEG — the verification oracle's image-to-image reference. |
 
 ### Learner — `/api/learner`
 
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/learner/voices` | Server-authoritative list of Gemini Live voices with `preview_url`. |
-| `POST` | `/api/learner/session/start` | Body: `{procedure_id, auto_advance?, voice?}`. Returns session id, full procedure, the assembled **current-step-only** system prompt, tool definitions, Gemini config, and an ephemeral token. |
-| `POST` | `/api/learner/session/{id}/token[?handle=...]` | Mint a fresh ephemeral token. Pass `?handle=<sessionResumptionUpdate.new_handle>` to bind it to the prior session so the next WebSocket continues with compressed context preserved. |
-| `POST` | `/api/learner/session/{id}/tool-call` | Forward a Gemini function call (`advance_step`, `get_reference_clip`, `go_to_step`); server executes and returns `{result: {...}}`. |
+| `POST` | `/api/learner/session/start` | Body: `{procedure_id, auto_advance?, active_monitoring?, voice?}`. Returns session id, full procedure, the assembled **current-step-only** system prompt, tool definitions, Gemini config, and an ephemeral token. `active_monitoring` (default `true`) is the master switch — when `false` the phone doesn't poll `/verify` (fully reactive, verbal-only). `auto_advance` (default `true`) gates visual advance, effective only when `active_monitoring` is also `true`. The iOS app collapses both into one Active/Passive toggle and always sends them equal. |
+| `POST` | `/api/learner/session/{id}/verify` | Multipart body with one JPEG part `frame`. Runs the out-of-band Flash oracle against the current step. Returns `{status}`: `skip` (verbal-only step / not auto-advancing), `pending`, `error` (`+error_text`), `advanced` (`+new_step/step_title/...`, session advanced server-side), or `completed`. The phone injects the outcome into Live as `[ADVANCE]`/`[CORRECTION]`. |
+| `POST` | `/api/learner/session/{id}/token[?handle=...]` | Mint a fresh ephemeral token. Pass `?handle=<sessionResumptionUpdate.new_handle>` to bind it to the prior session so the next WebSocket continues with compressed context preserved. Re-anchors the prompt on the session's current step. |
+| `POST` | `/api/learner/session/{id}/tool-call` | Forward a Gemini function call (`advance_step` — **verbal-only now**, `get_reference_clip`, `go_to_step`); server executes and returns `{result: {...}}`. |
 | `GET` | `/api/learner/session/{id}/state` | Current step, status, history (each entry carries `method: "visual" | "verbal"`). |
 | `GET` | `/api/learner/session/{id}/context-summary` | Compact text the phone injects as a user message after compression or reconnect to re-orient the model. |
 | `DELETE` | `/api/learner/session/{id}` | End and discard the session. |
@@ -272,7 +289,9 @@ main-local-server-test/
 │   ├── video_probe.py         # ffprobe authoritative duration
 │   ├── database.py            # SQLite WAL + ALTER-TABLE migrations. Tables: procedures, steps.
 │   ├── session.py             # In-memory session store, step advancement with method tagging, context-summary builder, tool-call dispatcher (shared)
-│   ├── prompt_builder.py      # Current-step-only system prompt. Tool definitions + Gemini config.
+│   ├── step_oracle.py         # Out-of-band visual verification. gemini-2.5-flash (RETRACE_ORACLE_MODEL) compares the learner's frame vs the step's step_N_done.jpg + completion_criteria + error_criteria → {complete, confidence, error_index}. Biased against false positives. Backs POST /session/{id}/verify.
+│   ├── prompt_builder.py      # Current-step-only system prompt. Live is conversation-only: an "EVENT SIGNALS" block tells it to act on injected [ADVANCE]/[CORRECTION] turns (from the oracle), not to watch the camera. advance_step is verbal-only. Tool definitions + Gemini config.
+│   ├── metadata_picker.py     # Flash (thinking_budget=0) call that picks each procedure's icon_symbol (Iconify id) + category from a closed enum. Used by all generation flows.
 │   ├── ephemeral_token.py     # Mints v1alpha auth_tokens with the full Retrace config locked in
 │   ├── procedure_search.py    # Gemini Flash-ranked search over the library by product + symptom
 │   ├── manual_ingest.py       # PDF → structured SOP via Gemini Files API. Shared by expert (mode="expert") + troubleshoot (mode="troubleshoot"). Renders source_page → PNG; writes path into step.clip_url.
@@ -294,7 +313,8 @@ main-local-server-test/
 ├── gemini_live_playground/    # Interactive REPL for prompt/tool tuning against the production config
 ├── fixtures/                  # Bundled manuals loaded on first start when absent from the DB (e.g. levoit_lv600hh_manual.pdf)
 ├── data/
-│   ├── clips/{procedure_id}/step_{n}.mp4
+│   ├── clips/{procedure_id}/step_{n}.mp4   # + on-demand step_{n}.jpg (first-frame poster) and step_{n}_done.jpg (last-frame "done state", oracle reference) cached beside each clip
+│   ├── manual_images/{procedure_id}/step_{n}.png   # rendered manual-page PNGs for manual-sourced procedures
 │   └── retrace.db             # SQLite (WAL mode)
 ├── uploads/                   # Source expert videos ({uuid}.{ext})
 ├── reprocess_clips.py         # Re-run clip extraction without hitting Gemini again (after tweaking ffmpeg flags)
@@ -314,10 +334,10 @@ Baked into every ephemeral token (the phone can't change them):
 
 - **Model:** `gemini-3.1-flash-live-preview` (released 2026-03-26, public preview) — verified 2026-04-17 via the production ephemeral-token + `BidiGenerateContentConstrained.v1alpha` path. Supports video input, tools, context compression, session resumption, in/out transcription. Override via `RETRACE_LIVE_MODEL`. `turn_coverage` defaults to `TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO` on 3.1, so silent-period video frames now reach the model.
 - **Voice:** server-authoritative list (Puck / Charon / Kore / Fenrir / Aoede / Zephyr / Enceladus / Leda — all 8 verified on 3.1). Default `Puck`.
-- **Context compression:** `trigger_tokens=100_000 → target_tokens=40_000`. At ~0.5 fps + `MEDIA_RESOLUTION_LOW`, first compression cycle fires around 25 min, then every ~12 min.
+- **Context compression:** `trigger_tokens=100_000 → target_tokens=40_000`. Per-frame token burn scales with media resolution, so the compression cadence moves with it (the old "~25 min then ~12 min" figures were derived under `MEDIA_RESOLUTION_LOW` and are unverified at the current `HIGH` setting — treat them as stale).
 - **Session resumption:** Gemini periodically emits `sessionResumptionUpdate.new_handle`. iOS persists the latest; on reconnect, `POST /session/{id}/token?handle=...` bakes it into `SessionResumptionConfig`.
 - **Transcription:** both input (learner) and output (AI reply) audio are transcribed so the iOS activity feed renders text.
-- **Media resolution:** `MEDIA_RESOLUTION_LOW` keeps video token burn at ~33 tok/s.
+- **Media resolution:** `MEDIA_RESOLUTION_HIGH` (`services/ephemeral_token.py`) — favors visual-verification detail over token thrift. Raising/lowering it directly moves the compression cadence.
 - **Token uses:** `uses=1`. iOS mints a fresh token per connection attempt (initial + retry + resumption).
 - **Expiry format:** ISO8601 with **millisecond** precision. iOS's `ISO8601DateFormatter.withFractionalSeconds` caps at 3 fractional digits — Python's default 6-digit microsecond output silently fails to parse.
 
@@ -325,7 +345,7 @@ Baked into every ephemeral token (the phone can't change them):
 
 ## Visual verification reliability
 
-Design steps around what VLMs can actually detect. The `completion_criteria` string on each step is what Gemini Live uses to decide when to call `advance_step` — write **observable end-states**, not actions.
+Design steps around what VLMs can actually detect. The `completion_criteria` string on each step is what the **verification oracle** (`services/step_oracle.py`) matches the learner's frame against — image-to-image, grounded on the expert clip's last frame (`step_N_done.jpg`). Write **observable single-frame end-states** ("the tray is fully seated in the slot"), not actions.
 
 | Reliability | What works |
 |---|---|
@@ -333,7 +353,11 @@ Design steps around what VLMs can actually detect. The `completion_criteria` str
 | **Marginal** | Small object state, correct orientation |
 | **Unreliable** | Fine alignment, sub-millimeter changes, torque/fit |
 
-The extraction prompt in `gemini_processor.py` asks Gemini to phrase completion criteria as observable end-states; keep it that way if you retune the prompt.
+At extraction, Gemini 2.5 Pro sets each step's `visual_verifiability` (`reliable|marginal|none`) from the spatial delta between the prior step's end-state and this one's. `none` marks steps with no single-frame visual consequence (counting, timing, torque) — the oracle never fires for them and they stay verbal-only.
+
+**Proactive error interjection (Interject).** Each step also carries `error_criteria` — observable *wrong-state* descriptions (empty is fine). The oracle tests the current frame against them on every `/verify` poll and, on a clear match, returns `error_text`; the phone injects a `[CORRECTION]` turn into Live. Interjection stays alive even on verbal-only steps. Same detectability rules — phrase each error as a clearly visible state ("the cap is still on", "the tray is upside down"). `error_criteria` is produced by Pro at extraction; `scripts/backfill_error_criteria.py` seeds legacy rows.
+
+Keep the extraction prompt in `gemini_processor.py` phrasing both criteria as observable end-states if you retune it.
 
 ---
 
@@ -411,9 +435,10 @@ No code changes — `cloudBaseURL` in iOS stays `https://retracexrcc.duckdns.org
 
 - `uploads/` — source expert videos, named `{uuid}.{ext}` (keep the original extension so ffprobe reads the container correctly).
 - `data/clips/{procedure_id}/step_{n}.mp4` — per-step clips.
+- `data/manual_images/{procedure_id}/step_{n}.png` — rendered manual-page PNGs for manual-sourced procedures (written into `step.clip_url`).
 - `data/retrace.db` — SQLite (WAL). Two tables:
-  - `procedures(id, title, description, total_duration, source_video, created_at, status, error_message, source_type, …)`
-  - `steps(id, procedure_id, step_number, title, description, timestamp_start, timestamp_end, tips, warnings, completion_criteria, clip_url, clip_status)`
+  - `procedures(id, title, description, total_duration, source_video, created_at, status, error_message, source_type, icon_symbol, icon_emoji, category, sources)` — `source_type ∈ {video, manual, web}`; the last five come from lightweight ALTER-TABLE migrations.
+  - `steps(id, procedure_id, step_number, title, description, timestamp_start, timestamp_end, tips, warnings, completion_criteria, error_criteria, visual_verifiability, clip_url, clip_status)` — `error_criteria` is a JSON array of observable error states; `visual_verifiability` is `reliable|marginal|none` (the oracle gate; legacy rows default `reliable`).
   - `tips` and `warnings` are JSON-encoded arrays.
   - `UNIQUE(procedure_id, step_number)` — reorder logic uses a two-pass negative-then-positive trick to avoid unique-constraint violations.
 - Sessions are **in-memory only** (a `dict` in `services/session.py`). They die with the process.
