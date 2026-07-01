@@ -3,7 +3,7 @@ import logging
 import sqlite3
 from pathlib import Path
 
-from config import DB_PATH
+from config import DB_PATH, EXTRACTION_PIPELINE_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,11 @@ def init_db():
         # phone for this procedure. Served from /api/reference_images/.
         # NULL on rows without one.
         ("reference_image_url", "TEXT"),
+        # The extraction-pipeline version this row was produced under
+        # (config.EXTRACTION_PIPELINE_VERSION). Legacy rows default to '' so
+        # they compare stale against any real version and get re-extracted on
+        # the next boot. save_procedure() stamps the current version on write.
+        ("extraction_version", "TEXT NOT NULL DEFAULT ''"),
     ]:
         try:
             conn.execute(f"ALTER TABLE procedures ADD COLUMN {col} {definition}")
@@ -165,12 +170,19 @@ def save_procedure(procedure: dict, steps: list[dict]):
                total_duration=:total_duration, status=:status,
                source_type=:source_type,
                icon_symbol=:icon_symbol, icon_emoji=:icon_emoji,
-               category=:category, sources=:sources
+               category=:category, sources=:sources,
+               extraction_version=:extraction_version
                WHERE id=:id""",
             {**procedure, "source_type": source_type,
              "icon_symbol": icon_symbol, "icon_emoji": icon_emoji,
-             "category": category, "sources": sources_json},
+             "category": category, "sources": sources_json,
+             "extraction_version": EXTRACTION_PIPELINE_VERSION},
         )
+        # Clear any existing steps so this write is idempotent — a fresh upload's
+        # placeholder has none, but an in-place re-extraction (services/reprocess.py)
+        # overwrites a procedure that already has steps. Without this the INSERTs
+        # below would trip UNIQUE(procedure_id, step_number).
+        conn.execute("DELETE FROM steps WHERE procedure_id = ?", (procedure["id"],))
         for step in steps:
             conn.execute(
                 """INSERT INTO steps (procedure_id, step_number, title, description,
@@ -274,6 +286,32 @@ def list_procedures() -> list[dict]:
             d["sources"] = json.loads(d.get("sources") or "[]")
             result.append(d)
         return result
+    finally:
+        conn.close()
+
+
+def list_stale_video_procedures() -> list[dict]:
+    """Video-sourced procedures whose extraction_version != the current pipeline
+    version — candidates for in-place re-extraction on startup.
+
+    Only `source_type='video'` rows are returned: they're the ones reproducible
+    from a source file in uploads/. Manual (PDF) and web procedures aren't
+    deterministically reproducible here, so they're deliberately excluded.
+    Returns the raw full `source_video` path (not basename) so the reprocessor
+    can find the file on disk.
+    """
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            """SELECT id, title, source_video, status, extraction_version
+               FROM procedures
+               WHERE source_type = 'video'
+                 AND status IN ('completed', 'completed_partial')
+                 AND IFNULL(extraction_version, '') != ?
+               ORDER BY created_at""",
+            (EXTRACTION_PIPELINE_VERSION,),
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 

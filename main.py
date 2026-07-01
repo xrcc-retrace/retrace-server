@@ -17,6 +17,7 @@ from services.clip_extractor import transcode_lens_variant, upload_lens_variant_
 from routers import ask_ai, expert, expert_manuals, icons, learner, procedures, troubleshoot
 from services.database import init_db
 from services.fixtures import schedule_fixtures_load
+from services.reprocess import schedule_reextract
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,6 +63,13 @@ async def lifespan(app: FastAPI):
     # manual the first time the server runs against a fresh DB. Non-blocking
     # so /health and API endpoints come up immediately.
     fixtures_task = schedule_fixtures_load()
+
+    # Background re-extraction — after a pipeline change (bump
+    # config.EXTRACTION_PIPELINE_VERSION), re-runs Gemini extraction in place over
+    # every video procedure with a stale stamp so their stored steps/criteria
+    # match today's pipeline. No-op when nothing is stale, so ordinary deploys
+    # pay nothing. Non-blocking; disable with RETRACE_AUTO_REEXTRACT=0.
+    reextract_task = schedule_reextract()
 
     # Bonjour only makes sense on the LAN. In cloud deploys (AWS VPC doesn't
     # support multicast anyway) the iOS app reaches us via a known hostname,
@@ -109,6 +117,8 @@ async def lifespan(app: FastAPI):
     # Shutdown
     if not fixtures_task.done():
         fixtures_task.cancel()
+    if not reextract_task.done():
+        reextract_task.cancel()
     if azc is not None and info is not None:
         await azc.async_unregister_service(info)
         await azc.async_close()

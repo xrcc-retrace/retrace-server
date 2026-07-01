@@ -8,17 +8,14 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from config import GEMINI_API_KEY, CLIPS_DIR, UPLOAD_DIR, REFERENCE_IMAGES_DIR
-from models.procedure import ProcedureStep
-from services.gemini_processor import process_expert_video
-from services.clip_extractor import extract_clips, transcode_lens_variant, upload_lens_variant_path
+from config import GEMINI_API_KEY, UPLOAD_DIR, REFERENCE_IMAGES_DIR
 from services.database import (
     create_procedure_placeholder,
     get_procedure,
-    save_procedure,
     set_procedure_reference_image,
     update_procedure_status,
 )
+from services.reprocess import process_video_into_procedure
 from services.video_probe import probe_duration
 
 logger = logging.getLogger(__name__)
@@ -115,92 +112,14 @@ async def delete_reference_image(procedure_id: str):
 
 
 async def _process_video(procedure_id: str, video_path: Path, actual_duration: float):
-    """Background coroutine: Gemini analysis + clip extraction."""
+    """Background coroutine: Gemini analysis + clip extraction.
+
+    Delegates the extraction pipeline to services.reprocess so a fresh upload and
+    an in-place re-extraction run identical code. On failure the upload path marks
+    the procedure failed and deletes the orphaned source video.
+    """
     try:
-        gemini_output = await process_expert_video(str(video_path), GEMINI_API_KEY)
-
-        # Clamp Gemini timestamps to the true video bounds. process_expert_video
-        # now returns a dict (not a Pydantic instance) so its top-level fields
-        # are dict keys; per-step entries are themselves dicts.
-        clamped_steps: list[dict] = []
-        for s in gemini_output["steps"]:
-            raw_start, raw_end = s["timestamp_start"], s["timestamp_end"]
-            start = max(0.0, min(raw_start, actual_duration))
-            end = max(start, min(raw_end, actual_duration))
-            if (start, end) != (raw_start, raw_end):
-                logger.warning(
-                    "Step %d timestamps clamped: (%.2f, %.2f) -> (%.2f, %.2f)",
-                    s["step_number"], raw_start, raw_end, start, end,
-                )
-            step_dict = dict(s)
-            step_dict["timestamp_start"] = start
-            step_dict["timestamp_end"] = end
-            clamped_steps.append(step_dict)
-
-        # Extract clips
-        try:
-            clip_paths, failed_steps = await extract_clips(
-                str(video_path), procedure_id, clamped_steps, CLIPS_DIR
-            )
-        except Exception as e:
-            logger.error("Clip extraction failed entirely: %s", e)
-            clip_paths = {}
-            failed_steps = [s["step_number"] for s in clamped_steps]
-
-        # Pre-generate the bitrate-capped lens variant of the FULL recording so
-        # the "Watch full recording" lens button streams smoothly on first play
-        # (mirrors the per-step clip variant). Non-fatal; the /api/uploads
-        # ?profile=lens route regenerates on demand if this is missing.
-        asyncio.create_task(
-            asyncio.to_thread(
-                transcode_lens_variant, video_path, upload_lens_variant_path(video_path)
-            )
-        )
-
-        # Build step data with clip URLs + per-step status
-        failed_set = set(failed_steps)
-        steps: list[ProcedureStep] = []
-        for s in clamped_steps:
-            step_num = s["step_number"]
-            if step_num in failed_set:
-                clip_url = None
-                clip_status = "failed"
-            else:
-                clip_url = f"/api/clips/{procedure_id}/step_{step_num}.mp4"
-                clip_status = "ready"
-            steps.append(ProcedureStep(
-                step_number=step_num,
-                title=s["title"],
-                description=s["description"],
-                timestamp_start=s["timestamp_start"],
-                timestamp_end=s["timestamp_end"],
-                tips=s.get("tips", []),
-                warnings=s.get("warnings", []),
-                completion_criteria=s.get("completion_criteria", ""),
-                error_criteria=s.get("error_criteria", []),
-                visual_verifiability=s.get("visual_verifiability", "reliable"),
-                clip_url=clip_url,
-                clip_status=clip_status,
-            ))
-
-        # Save completed procedure to database
-        procedure_dict = {
-            "id": procedure_id,
-            "title": gemini_output["title"],
-            "description": gemini_output["description"],
-            "total_duration": actual_duration,
-            "status": "completed_partial" if failed_steps else "completed",
-            "icon_symbol": gemini_output["icon_symbol"],
-            "icon_emoji": gemini_output["icon_emoji"],
-            "category": gemini_output["category"],
-        }
-        steps_dicts = [s.model_dump() for s in steps]
-        save_procedure(procedure_dict, steps_dicts)
-
-        logger.info(
-            "Procedure created: %s (%s, %d steps, status=%s)",
-            procedure_id, gemini_output["title"], len(steps), procedure_dict["status"],
-        )
+        await process_video_into_procedure(procedure_id, video_path, actual_duration)
     except Exception as e:
         logger.error("Background processing failed for %s: %s", procedure_id, e)
         update_procedure_status(procedure_id, "failed", str(e))

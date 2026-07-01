@@ -16,6 +16,20 @@ DB_PATH = DATA_DIR / "retrace.db"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-2.5-pro"
 
+# Version stamp for the video-extraction pipeline. Every procedure row records
+# the version it was extracted under (procedures.extraction_version). On startup
+# the server re-extracts, in place, any video-sourced procedure whose stamp is
+# stale (see services/reprocess.py). BUMP THIS STRING whenever a change would
+# make old rows disagree with what a fresh extraction produces today — e.g. the
+# Gemini prompt in gemini_processor.py, the structured-output schema in
+# models/procedure.py (new/renamed step fields), oracle criteria phrasing, or
+# clip ffmpeg flags. Leaving it unchanged means unrelated deploys (routers, iOS,
+# typo fixes) trigger no re-extraction — the whole point of the gate.
+EXTRACTION_PIPELINE_VERSION = os.environ.get(
+    "RETRACE_EXTRACTION_VERSION",
+    "2026-06-30-oracle-fields",
+)
+
 # Live model id baked into every ephemeral token. Override via
 # RETRACE_LIVE_MODEL=<id> for fast rollback without a code change, e.g.
 #   RETRACE_LIVE_MODEL=gemini-2.5-flash-native-audio-preview-12-2025 python main.py
