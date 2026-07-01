@@ -194,8 +194,12 @@ async def get_upload(filename: str, profile: Optional[str] = None):
 
 @app.get("/api/reference_images/{filename}")
 async def serve_reference_image(filename: str):
-    path = REFERENCE_IMAGES_DIR / filename
-    if not path.exists():
+    # Guard against path traversal: resolve the candidate and confirm it stays
+    # inside REFERENCE_IMAGES_DIR before serving. A crafted filename (e.g. an
+    # encoded "../../etc/passwd") must not escape the images directory.
+    base = REFERENCE_IMAGES_DIR.resolve()
+    path = (base / filename).resolve()
+    if not path.is_relative_to(base) or not path.is_file():
         raise HTTPException(status_code=404)
     return FileResponse(path)
 
