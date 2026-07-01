@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from zeroconf import ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
 
-from config import UPLOAD_DIR
+from config import UPLOAD_DIR, REFERENCE_IMAGES_DIR
 from services.clip_extractor import transcode_lens_variant, upload_lens_variant_path
 from routers import ask_ai, expert, expert_manuals, icons, learner, procedures, troubleshoot
 from services.database import init_db
@@ -190,6 +190,14 @@ async def get_upload(filename: str, profile: Optional[str] = None):
         logger.warning("Lens variant unavailable for %s; serving raw upload", filename)
     media_type = "video/quicktime" if filename.endswith(".mov") else "video/mp4"
     return FileResponse(str(file_path), media_type=media_type)
+
+
+@app.get("/api/reference_images/{filename}")
+async def serve_reference_image(filename: str):
+    path = REFERENCE_IMAGES_DIR / filename
+    if not path.exists():
+        raise HTTPException(status_code=404)
+    return FileResponse(path)
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
