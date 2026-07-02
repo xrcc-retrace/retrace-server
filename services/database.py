@@ -70,6 +70,10 @@ def init_db():
         # phone for this procedure. Served from /api/reference_images/.
         # NULL on rows without one.
         ("reference_image_url", "TEXT"),
+        # Visual parts glossary extracted from the expert video.
+        # JSON-serialized list of {name, appearance}; '[]' on legacy rows
+        # and manual/web procedures. Embedded into the Live coaching prompt.
+        ("parts", "TEXT NOT NULL DEFAULT '[]'"),
         # The extraction-pipeline version this row was produced under
         # (config.EXTRACTION_PIPELINE_VERSION). Legacy rows default to '' so
         # they compare stale against any real version and get re-extracted on
@@ -164,18 +168,20 @@ def save_procedure(procedure: dict, steps: list[dict]):
     icon_emoji = procedure.get("icon_emoji", "") or ""
     category = procedure.get("category", "Other") or "Other"
     sources_json = json.dumps(procedure.get("sources", []) or [])
+    parts_json = json.dumps(procedure.get("parts", []) or [])
     try:
         conn.execute(
             """UPDATE procedures SET title=:title, description=:description,
                total_duration=:total_duration, status=:status,
                source_type=:source_type,
                icon_symbol=:icon_symbol, icon_emoji=:icon_emoji,
-               category=:category, sources=:sources,
+               category=:category, sources=:sources, parts=:parts,
                extraction_version=:extraction_version
                WHERE id=:id""",
             {**procedure, "source_type": source_type,
              "icon_symbol": icon_symbol, "icon_emoji": icon_emoji,
              "category": category, "sources": sources_json,
+             "parts": parts_json,
              "extraction_version": EXTRACTION_PIPELINE_VERSION},
         )
         # Clear any existing steps so this write is idempotent — a fresh upload's
@@ -240,6 +246,8 @@ def get_procedure(procedure_id: str) -> dict | None:
         # JSON-deserialize the sources column. Default to [] for rows that
         # predate the migration or for procedures without web sources.
         proc["sources"] = json.loads(proc.get("sources") or "[]")
+        # Same for the parts glossary (legacy rows / manual/web procedures).
+        proc["parts"] = json.loads(proc.get("parts") or "[]")
         step_rows = conn.execute(
             "SELECT * FROM steps WHERE procedure_id = ? ORDER BY step_number",
             (procedure_id,),

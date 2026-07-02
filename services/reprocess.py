@@ -125,6 +125,7 @@ async def process_video_into_procedure(
         "icon_symbol": gemini_output["icon_symbol"],
         "icon_emoji": gemini_output["icon_emoji"],
         "category": gemini_output["category"],
+        "parts": gemini_output.get("parts", []),
     }
     steps_dicts = [s.model_dump() for s in steps]
     save_procedure(procedure_dict, steps_dicts)

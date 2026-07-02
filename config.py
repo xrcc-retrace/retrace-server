@@ -27,7 +27,7 @@ GEMINI_MODEL = "gemini-2.5-pro"
 # typo fixes) trigger no re-extraction — the whole point of the gate.
 EXTRACTION_PIPELINE_VERSION = os.environ.get(
     "RETRACE_EXTRACTION_VERSION",
-    "2026-06-30-oracle-fields",
+    "2026-07-02-parts-glossary",
 )
 
 # Live model id baked into every ephemeral token. Override via

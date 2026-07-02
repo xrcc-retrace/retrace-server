@@ -95,8 +95,9 @@ GEMINI_CONFIG = {
     # waitlist). Verified 2026-04-17 via /tmp/probe_31_constrained.py: the
     # ephemeral-token + BidiGenerateContentConstrained.v1alpha path accepts
     # the full Retrace config (tools, speech_config, context_window_compression,
-    # session_resumption, in/out transcription, media_resolution=LOW) — must
-    # only drop ProactivityConfig (3.1 errors "Unknown name 'proactivity'").
+    # session_resumption, in/out transcription, media_resolution — now HIGH,
+    # see services/ephemeral_token.py) — must only drop ProactivityConfig
+    # (3.1 errors "Unknown name 'proactivity'").
     # turn_coverage default flips on 3.1 from TURN_INCLUDES_ONLY_ACTIVITY to
     # TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO, so silent-period video frames
     # now reach the model — fixing the visual auto-advance latency we hit on 2.5.
@@ -132,6 +133,8 @@ def build_system_prompt(
     )
     step_progression = _STEP_PROGRESSION_AUTO if auto_advance else _STEP_PROGRESSION_MANUAL
     visual_monitoring = _visual_monitoring(auto_advance, active_monitoring)
+    parts_glossary = _parts_glossary(procedure.get("parts") or [])
+    visual_honesty = _visual_honesty(has_parts=bool(procedure.get("parts")))
 
     reference_note = ""
     if procedure.get("reference_image_url"):
@@ -157,7 +160,7 @@ def build_system_prompt(
 Title: {procedure["title"]}
 Description: {procedure["description"]}
 Total steps: {len(procedure["steps"])}{reference_note}
-
+{parts_glossary}
 {step_progression}
 
 === COACHING MOMENTS ===
@@ -180,6 +183,8 @@ Step completion (advance_step returned status="advanced"): give a brief warm con
 Procedure completion (advance_step returned status="completed"): a slightly longer warm close — 1-3 sentences of real praise. This is the one moment where audio length matters more than the brevity rule.
 
 Mistake interjection: short and urgent, then the fix. "Hold on — you're turning it the wrong way, go counter-clockwise."
+
+{visual_honesty}
 
 {visual_monitoring}
 
@@ -222,6 +227,47 @@ Use go_to_step when the learner asks to jump to a specific step number, or to re
 
 _STEP_PROGRESSION_AUTO = _step_progression_auto()
 _STEP_PROGRESSION_MANUAL = _step_progression_manual()
+
+
+def _parts_glossary(parts: list[dict]) -> str:
+    """Format the extraction-time visual parts glossary for the prompt.
+
+    Parts are objects, not steps — listing them all does not leak
+    future-step actions, and the coach needs the full set to answer
+    "is this the right piece?" before the step that uses it arrives.
+    Empty for legacy / manual / web procedures → section omitted.
+    """
+    if not parts:
+        return ""
+    lines = "\n".join(f"- {p['name']}: {p['appearance']}" for p in parts)
+    return f"""
+=== PARTS GLOSSARY (context only — never recite this as a list) ===
+The distinct parts and tools in this procedure, described for visual identification on the camera:
+{lines}
+"""
+
+
+def _visual_honesty(has_parts: bool) -> str:
+    """Anti-sycophancy rules for the learner's direct visual questions.
+
+    Live doesn't decide step completion (the out-of-band oracle owns
+    that), but "is this the right piece?" questions land squarely on
+    Live's low-res feed — and without these rules the model agrees with
+    whatever the learner asserts instead of judging from the frame.
+    """
+    glossary_line = (
+        "\n- Match what you see against the PARTS GLOSSARY above — judge by the "
+        "described color, shape, and size, and use its tell-apart notes when two "
+        "parts look alike."
+        if has_parts
+        else ""
+    )
+    return f"""=== VISUAL HONESTY ===
+The learner will sometimes hold something up and ask you to confirm it ("is this the right piece?", "is this attached?", "does this look right?"). These questions deserve real judgment, not agreement:
+- Before answering, look at the current camera frame and decide from what you actually see — never from what the learner asserted or how confident they sounded.{glossary_line}
+- If the frame contradicts them, say so plainly and kindly, and describe what to look for instead ("that looks like the smaller silver one — the piece you want is black and about palm-length").
+- If you can't see it clearly enough to judge, say exactly that and ask them to hold it up close to the camera and keep it still for a second. "I can't tell from here — hold it up closer" is always better than a guess.
+- Never confirm something you cannot clearly see. Agreeing wrongly costs the learner minutes of rework; asking for a better view costs seconds."""
 
 
 def _visual_monitoring(auto_advance: bool, active_monitoring: bool) -> str:

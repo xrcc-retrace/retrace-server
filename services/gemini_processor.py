@@ -74,6 +74,13 @@ BAD examples — do NOT produce output in these shapes:
 
 Output at most three entries per step — fewer is fine, zero is fine when nothing distinct applies. These strings are handed to the verification model, so clarity and specificity directly determine whether the coach interjects correctly or hallucinates.
 
+=== PARTS GLOSSARY ===
+Separately from the steps, build the procedure-level `parts` list: every DISTINCT physical part, component, or tool the expert handles anywhere in the video. During the live coaching session the learner will hold parts up to the camera and ask "is this the right piece?" — the coach answers from these descriptions, so write each `appearance` for VISUAL DISAMBIGUATION on a live camera feed:
+- Name the color, material/finish (matte, glossy, knurled, threaded), overall shape, and approximate size relative to a hand or the main tool.
+- Lead with the single most distinctive feature — the thing that separates this part from everything else on the workbench.
+- When the kit contains two parts that look alike (e.g. mandrels or nose pieces of different sizes), explicitly state how to tell them apart in BOTH entries.
+- One entry per part — no duplicates across steps; describe the part itself, not what is done with it.
+
 Output JSON matching the GeminiVideoProcedureOutput schema. Field-level shape requirements (title format, description length, tips/warnings, completion_criteria observability) live in the response schema's field descriptions — follow those."""
 
 
@@ -107,6 +114,7 @@ async def process_expert_video(video_path: str, api_key: str) -> dict[str, Any]:
             "icon_emoji": str,          # from pick_metadata
             "category": str,            # from pick_metadata
             "steps": list[dict],        # each step as a dict
+            "parts": list[dict],        # visual parts glossary ({name, appearance})
         }
     """
     client = _get_client(api_key)
@@ -180,6 +188,7 @@ async def process_expert_video(video_path: str, api_key: str) -> dict[str, Any]:
             "icon_emoji": "",
             "category": metadata["category"],
             "steps": [s.model_dump() for s in parsed.steps],
+            "parts": [p.model_dump() for p in parsed.parts],
         }
     finally:
         try:

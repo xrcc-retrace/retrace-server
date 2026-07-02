@@ -61,6 +61,18 @@ class ProcedureStep(BaseModel):
     clip_status: str = "ready"  # "ready" | "failed"
 
 
+class ProcedurePart(BaseModel):
+    """One distinct physical part or tool handled in the procedure.
+
+    Extracted by Gemini Pro from the expert video and embedded into the
+    Live coaching prompt as a parts glossary, so the coach can answer
+    "is this the right piece?" from a real description instead of
+    agreeing with whatever the learner asserts.
+    """
+    name: str
+    appearance: str
+
+
 class ProcedureSource(BaseModel):
     """One online source cited in a web-search-derived procedure.
 
@@ -94,6 +106,9 @@ class Procedure(BaseModel):
     # Online sources cited by the troubleshoot web-search flow. Empty for
     # video- and manual-derived procedures.
     sources: list[ProcedureSource] = []
+    # Visual parts glossary extracted from the expert video. Empty for
+    # manual/web procedures and legacy rows predating the parts extraction.
+    parts: list[ProcedurePart] = []
     # Optional reference image (e.g. a diagram) shown on the learner's phone
     # for this procedure. Served from /api/reference_images/. None when unset.
     reference_image_url: str | None = None
@@ -268,6 +283,36 @@ class GeminiVideoProcedureStep(_BaseProcedureStep):
     )
 
 
+class GeminiVideoProcedurePart(BaseModel):
+    """Visual identification entry for one physical part/tool in the video.
+
+    These strings are embedded verbatim into the Live coaching prompt so
+    the coach can visually disambiguate parts when the learner holds one
+    up and asks "is this the right piece?" — precision here directly
+    determines whether the coach confirms the right part or the wrong one.
+    """
+
+    name: str = Field(
+        description=(
+            "The name the coach should call this part — prefer the term "
+            "the expert uses in narration; otherwise a short natural name "
+            'a first-time learner would understand (e.g. "nose piece", '
+            '"M5 mandrel", "locking collar").'
+        ),
+    )
+    appearance: str = Field(
+        description=(
+            "1-2 sentences of VISUAL identification written for telling "
+            "parts apart on a live camera: color, material/finish, shape, "
+            "approximate size relative to a hand or the main tool, and the "
+            "single most distinctive feature. If the kit contains a "
+            "similar-looking part it could be confused with, end with how "
+            'to tell them apart (e.g. "unlike the smaller silver mandrel, '
+            'this one is matte black and nearly palm-length").'
+        ),
+    )
+
+
 class GeminiVideoProcedureOutput(BaseModel):
     title: str = Field(
         description="Short, descriptive procedure title.",
@@ -283,6 +328,16 @@ class GeminiVideoProcedureOutput(BaseModel):
             "Ordered list of discrete, actionable steps. Each step is "
             "a non-overlapping time range; together they cover the "
             "entire video duration."
+        ),
+    )
+    parts: list[GeminiVideoProcedurePart] = Field(
+        default=[],
+        description=(
+            "Every DISTINCT physical part, component, or tool the expert "
+            "handles anywhere in the video — one entry each, no "
+            "duplicates. Include parts that are attached/consumed along "
+            "the way. Empty list only if the video genuinely involves no "
+            "distinct handled parts."
         ),
     )
 
