@@ -7,9 +7,83 @@ troubleshoot flow can evolve without touching the learner prompt.
 import logging
 
 from config import RETRACE_LIVE_MODEL
+from services import database
 from services import voice_commands as vc
 
 logger = logging.getLogger(__name__)
+
+
+# Standalone visual-identification hints for equipment that camera-based
+# identification reliably confuses with a more common lookalike. These are
+# UNCONDITIONAL — injected into the VISUAL CONTEXT section on every session,
+# independent of what procedures happen to be in the library. (They used to be
+# gated on a procedure-title substring match, which silently never fired when
+# no matching procedure existed — so the hint was dead. Keep them library-
+# independent so demo tools identify correctly with an empty/mismatched DB.)
+_EQUIPMENT_ID_HINTS = [
+    (
+        "Rivet nut tool (rivnut/nutsert setter): a hand-operated tool with "
+        "two long lever handles like bolt cutters or heavy pliers, meeting at "
+        "a compact head with a vertical threaded mandrel and interchangeable "
+        "nosepiece at the tip; squeezed with both hands. It has NO motor, NO "
+        "trigger, NO chuck, and NO battery pack — if you think you see a power "
+        "drill but the tool has two long squeeze handles, it is this rivet nut "
+        "tool, NOT a drill."
+    ),
+]
+
+
+def _build_equipment_hints_block() -> str:
+    """Unconditional visual-ID hints appended to the VISUAL CONTEXT section."""
+    if not _EQUIPMENT_ID_HINTS:
+        return ""
+    return (
+        " Some equipment is easy to misread from the camera — apply these "
+        "identification notes when what you see matches: "
+        + " ".join(_EQUIPMENT_ID_HINTS)
+    )
+
+
+def _build_known_products_block() -> str:
+    """List the procedure library's products so identification is grounded
+    in what Retrace actually knows, not a generic visual guess."""
+    try:
+        procedures = [
+            p for p in database.list_procedures()
+            if p.get("status") in ("completed", "completed_partial")
+        ]
+    except Exception:
+        logger.exception("Known-products block: library query failed; omitting")
+        return ""
+    if not procedures:
+        return ""
+
+    lines = []
+    seen_titles = set()
+    for p in procedures:
+        title = " ".join((p.get("title") or "").split())
+        if not title or title.lower() in seen_titles:
+            continue
+        seen_titles.add(title.lower())
+        line = f"- {title}"
+        category = (p.get("category") or "").strip()
+        if category:
+            line += f" (category: {category})"
+        lines.append(line)
+    if not lines:
+        return ""
+
+    return (
+        "=== KNOWN PRODUCTS (RETRACE LIBRARY) ===\n"
+        "The Retrace library has procedures for these products:\n"
+        + "\n".join(lines)
+        + "\n"
+        "Before identifying a product — from the camera or from the user's "
+        "description — check whether it matches one of these. When the "
+        "visual evidence is compatible with a library product, prefer that "
+        "identification over a generic lookalike guess, and pass the "
+        "library product's name to identify_product.\n"
+    )
 
 
 # Tools Gemini Live can call during a diagnostic session. session_id is
@@ -191,6 +265,8 @@ def build_diagnostic_prompt(voice: str = "Charon") -> str:
     # into Python.
     start_examples = vc.format_utterance_examples("start_matched_procedure")
     retry_examples = vc.format_utterance_examples("retry_diagnosis")
+    known_products_block = _build_known_products_block()
+    equipment_hints = _build_equipment_hints_block()
 
     prompt = f"""You are a field diagnostic assistant. A technician or skilled user has a broken piece of equipment in front of them and needs to figure out what's wrong and how to fix it. You are SPEAKING to them through their phone or glasses — not writing. Think of a knowledgeable colleague on a phone call: calm, curious, focused, respects their time.
 
@@ -229,8 +305,9 @@ If search_procedures returned status='no_match' (no candidates in the library): 
 === SUMMARIZING ===
 After every 2-3 exchanges, give the user a one-sentence recap of what's been established so they know you're tracking. Example shape: "So: Levoit LV600HH, tank full, fan running, no mist, no cleaning in about six months." Then ask the next diagnostic question.
 
+{known_products_block}
 === VISUAL CONTEXT ===
-You can see the user's phone camera feed. Identify the device in the central focus of the frame from what you see, and call `identify_product` from that — don't wait for the user to name a brand or model. If text on the device is clearly legible, use it; if not, trust your recognition of the object itself. Confirm or contradict the user's described symptoms when they're visibly observable. Don't narrate the scene, don't ask them to reframe the camera, don't comment on what they're holding unless it's directly diagnostic.
+You can see the user's phone camera feed. Identify the device in the central focus of the frame from what you see, and call `identify_product` from that — don't wait for the user to name a brand or model. If text on the device is clearly legible, use it; if not, trust your recognition of the object itself. Check the KNOWN PRODUCTS list first: when what you see is compatible with a library product, identify it as that product rather than a generic lookalike. Confirm or contradict the user's described symptoms when they're visibly observable. Don't narrate the scene, don't ask them to reframe the camera, don't comment on what they're holding unless it's directly diagnostic.{equipment_hints}
 
 === ESCALATION ===
 If 5 exchanges pass without a clear product identification, stop asking and call identify_product with whatever you have. The tool response will tell you how to proceed.
