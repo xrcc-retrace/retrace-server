@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import socket
@@ -17,6 +18,7 @@ from services.clip_extractor import transcode_lens_variant, upload_lens_variant_
 from routers import ask_ai, expert, expert_manuals, icons, learner, procedures, troubleshoot
 from services.database import init_db
 from services.fixtures import schedule_fixtures_load
+from services.lens_variants import schedule_lens_refresh
 from services.reprocess import schedule_reextract
 
 logging.basicConfig(
@@ -71,6 +73,14 @@ async def lifespan(app: FastAPI):
     # pay nothing. Non-blocking; disable with RETRACE_AUTO_REEXTRACT=0.
     reextract_task = schedule_reextract()
 
+    # Background lens-variant refresh — when LENS_ENCODE_VERSION (bumped on
+    # encode-ladder changes in clip_extractor.py) is newer than the marker in
+    # DATA_DIR, force-regenerates every _lens.mp4 in place. This is how the
+    # deployed box's clips pick up new lens encode settings on deploy+restart.
+    # No-op on ordinary deploys. Non-blocking; old variants serve until each
+    # atomic replace lands.
+    lens_refresh_task = schedule_lens_refresh()
+
     # Bonjour only makes sense on the LAN. In cloud deploys (AWS VPC doesn't
     # support multicast anyway) the iOS app reaches us via a known hostname,
     # so skip the advertisement and the startup/shutdown noise it brings.
@@ -119,6 +129,8 @@ async def lifespan(app: FastAPI):
         fixtures_task.cancel()
     if not reextract_task.done():
         reextract_task.cancel()
+    if not lens_refresh_task.done():
+        lens_refresh_task.cancel()
     if azc is not None and info is not None:
         await azc.async_unregister_service(info)
         await azc.async_close()
@@ -195,7 +207,14 @@ async def get_upload(filename: str, profile: Optional[str] = None):
         raise HTTPException(404, "Upload not found")
     if profile == "lens":
         lens_path = upload_lens_variant_path(file_path)
-        if lens_path.exists() or transcode_lens_variant(file_path, lens_path):
+        # Variants are pre-generated at upload processing (services/reprocess.py)
+        # and backfilled by backfill_lens_clips.py, so this is normally a cache
+        # hit. The on-demand transcode is a fallback for uploads that predate
+        # both — run it off the event loop so a minutes-long encode doesn't
+        # freeze every other request on the server.
+        if lens_path.exists() or await asyncio.to_thread(
+            transcode_lens_variant, file_path, lens_path
+        ):
             return FileResponse(str(lens_path), media_type="video/mp4")
         logger.warning("Lens variant unavailable for %s; serving raw upload", filename)
     media_type = "video/quicktime" if filename.endswith(".mov") else "video/mp4"

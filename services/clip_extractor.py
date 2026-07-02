@@ -10,6 +10,12 @@ logger = logging.getLogger(__name__)
 # Suffix for the lens-optimized variant served to the glasses at ?profile=lens.
 LENS_VARIANT_SUFFIX = "_lens"
 
+# Bump whenever transcode_lens_variant's encode ladder changes. The startup
+# refresh (services/lens_variants.py) compares this against the marker file it
+# leaves in DATA_DIR and force-regenerates every existing variant on mismatch —
+# that's how a deployed server's clips pick up new encode settings.
+LENS_ENCODE_VERSION = 2
+
 
 def lens_variant_path(clip_path: Path) -> Path:
     """The lens-variant path that sits beside a full clip (step_N.mp4 → step_N_lens.mp4)."""
@@ -77,29 +83,40 @@ def transcode_lens_variant(src_mp4: Path, dst_mp4: Path) -> bool:
 
     The native glasses lens is a 600x600 viewport fed over the Bluetooth Display
     link, so bytes-to-first-frame dominates playback latency. This downscales to
-    fit 600x600 (aspect preserved, dims kept even for libx264) and caps the
-    bitrate, while keeping the same iOS/VideoToolbox-compatibility flags as
-    `extract_clips` (-bf 0, yuv420p, bt709 color tags + SEI, +faststart) so the
-    variant plays everywhere the full clip does.
+    fit 480x480 (aspect preserved, dims kept even for libx264), drops to 12fps,
+    and caps the bitrate, while keeping the same iOS/VideoToolbox-compatibility
+    flags as `extract_clips` (-bf 0, yuv420p, bt709 color tags + SEI, +faststart)
+    so the variant plays everywhere the full clip does.
 
     Returns True on success, False (logged) on any ffmpeg failure — callers treat
     a False as "fall back to the full clip" rather than an error.
+
+    Writes atomically (temp file + rename): the startup refresh regenerates
+    variants on a LIVE server, and a concurrent FileResponse must never stream
+    a half-written file.
     """
+    # Sibling temp path keeps the .mp4 extension so ffmpeg infers the muxer.
+    tmp_mp4 = dst_mp4.with_name(f"{dst_mp4.stem}.tmp{dst_mp4.suffix}")
     cmd = [
         FFMPEG_PATH, "-y",
         "-i", str(src_mp4),
-        # Fit within 600x600, preserve aspect, force even dimensions (libx264).
-        "-vf", "scale=600:600:force_original_aspect_ratio=decrease:force_divisible_by=2",
+        # Fit within 480x480, preserve aspect, force even dimensions (libx264).
+        # The lens viewport is 600dp, but at glasses display size the 480-box
+        # downscale is barely perceptible and cuts pixel load ~36%.
+        "-vf", "scale=480:480:force_original_aspect_ratio=decrease:force_divisible_by=2",
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "28",
         # Hard bitrate ceiling — the real lever for BT-link transfer time.
-        # Capped at 350k to keep the peak stream under what the Bluetooth
-        # Display link sustains; above this, busy-scene bitrate spikes starve
-        # the on-glasses buffer and the clip stutters/freezes mid-playback.
-        "-maxrate", "350k",
-        "-bufsize", "700k",
-        "-r", "15",
+        # 200k (at 480-box/12fps) keeps the sustained stream comfortably under
+        # what the Bluetooth Display link sustains; riding the cap starves the
+        # on-glasses buffer and the clip stutters/freezes mid-playback.
+        "-maxrate", "200k",
+        # bufsize == maxrate (1s of burst) keeps the stream near-CBR: a smaller
+        # startup burst before the first decodable second (faster first frame)
+        # and no busy-scene spikes past the link rate mid-clip.
+        "-bufsize", "200k",
+        "-r", "12",
         # Same iOS-compat flags as extract_clips (negative-DTS / color SEI).
         "-bf", "0",
         "-pix_fmt", "yuv420p",
@@ -108,16 +125,21 @@ def transcode_lens_variant(src_mp4: Path, dst_mp4: Path) -> bool:
         "-colorspace", "bt709",
         "-color_range", "tv",
         "-x264opts", "colorprim=bt709:transfer=bt709:colormatrix=bt709",
+        # Mono 32k AAC — transparent for expert voice narration, and stereo 64k
+        # was ~16% of the total stream.
         "-c:a", "aac",
-        "-b:a", "64k",
+        "-ac", "1",
+        "-b:a", "32k",
         "-movflags", "+faststart",
-        str(dst_mp4),
+        str(tmp_mp4),
     ]
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        tmp_mp4.replace(dst_mp4)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
         stderr = getattr(e, "stderr", "") or ""
-        logger.error("Lens-variant transcode failed for %s: %s", src_mp4.name, stderr[-500:])
+        logger.error("Lens-variant transcode failed for %s: %s", src_mp4.name, stderr[-500:] or e)
+        tmp_mp4.unlink(missing_ok=True)
         return False
     logger.info(
         "Lens variant saved: %s (%.0f KB)",

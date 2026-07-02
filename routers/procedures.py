@@ -137,7 +137,13 @@ async def get_clip(procedure_id: str, step_number: int, profile: Optional[str] =
 
     if profile == "lens":
         lens_path = lens_variant_path(clip_path)
-        if lens_path.exists() or transcode_lens_variant(clip_path, lens_path):
+        # Variants are pre-generated at extraction and refreshed at startup
+        # (services/lens_variants.py), so this is normally a cache hit. The
+        # on-demand transcode is a fallback — run it off the event loop so a
+        # long encode doesn't freeze every other request (incl. /verify polls).
+        if lens_path.exists() or await asyncio.to_thread(
+            transcode_lens_variant, clip_path, lens_path
+        ):
             return FileResponse(str(lens_path), media_type="video/mp4")
         # Transcode failed — degrade to the full clip rather than erroring.
         logger.warning("Lens variant unavailable for %s step %s; serving full clip",
