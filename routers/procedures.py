@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from config import CLIPS_DIR, FFMPEG_PATH
+from models.procedure import ProcedurePart
 from services.clip_extractor import (
     extract_done_frame,
     lens_variant_path,
@@ -36,6 +37,10 @@ class ProcedureUpdateBody(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     step_order: Optional[list[int]] = None
+    # Visual parts glossary ({name, appearance} entries). Normally produced
+    # by extraction; settable here so a glossary can be seeded/corrected
+    # without re-running Gemini over the source video.
+    parts: Optional[list[ProcedurePart]] = None
 
 
 class StepUpdateBody(BaseModel):
@@ -95,6 +100,7 @@ async def update_procedure_endpoint(procedure_id: str, body: ProcedureUpdateBody
         title=body.title,
         description=body.description,
         step_order=body.step_order,
+        parts=[p.model_dump() for p in body.parts] if body.parts is not None else None,
     ):
         raise HTTPException(404, "Procedure not found")
     return get_procedure(procedure_id)

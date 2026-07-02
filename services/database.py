@@ -326,7 +326,8 @@ def list_stale_video_procedures() -> list[dict]:
 
 def update_procedure_fields(procedure_id: str, title: str | None = None,
                             description: str | None = None,
-                            step_order: list[int] | None = None) -> bool:
+                            step_order: list[int] | None = None,
+                            parts: list[dict] | None = None) -> bool:
     """Update procedure fields. Returns True if found."""
     conn = _get_conn()
     try:
@@ -339,6 +340,9 @@ def update_procedure_fields(procedure_id: str, title: str | None = None,
             conn.execute("UPDATE procedures SET title = ? WHERE id = ?", (title, procedure_id))
         if description is not None:
             conn.execute("UPDATE procedures SET description = ? WHERE id = ?", (description, procedure_id))
+        if parts is not None:
+            conn.execute("UPDATE procedures SET parts = ? WHERE id = ?",
+                         (json.dumps(parts), procedure_id))
 
         # Step reordering: update step_number for each step to match new order
         if step_order is not None:
