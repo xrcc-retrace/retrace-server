@@ -71,6 +71,14 @@ def refresh_all(force: bool = False, dry_run: bool = False) -> tuple[int, int, i
     """
     generated = skipped = failed = 0
     for src, dst in _sources():
+        # Zero-byte sources are failed extractions (clip_status="failed",
+        # never linked by clients) — ffmpeg can't transcode them and they'd
+        # otherwise fail every pass, blocking the version marker forever and
+        # forcing a full re-encode on every restart.
+        if src.stat().st_size == 0:
+            logger.warning("Skipping empty source (failed extraction): %s", src)
+            skipped += 1
+            continue
         if dst.exists() and not force:
             skipped += 1
             continue
