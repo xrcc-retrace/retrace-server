@@ -25,10 +25,9 @@ _EQUIPMENT_ID_HINTS = [
         "Rivet nut tool (rivnut/nutsert setter): a hand-operated tool with "
         "two long lever handles like bolt cutters or heavy pliers, meeting at "
         "a compact head with a vertical threaded mandrel and interchangeable "
-        "nosepiece at the tip; squeezed with both hands. It has NO motor, NO "
-        "trigger, NO chuck, and NO battery pack — if you think you see a power "
-        "drill but the tool has two long squeeze handles, it is this rivet nut "
-        "tool, NOT a drill."
+        "nosepiece at the tip; squeezed with both hands. If you think you see a "
+        "power drill but the tool has two long squeeze handles, it is this "
+        "rivet nut tool, NOT a drill."
     ),
 ]
 
