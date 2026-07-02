@@ -82,6 +82,21 @@ jobs:
             echo "::endgroup::"
 
             echo "::group::health check"
-            curl -sfS http://localhost:8000/health
-            echo ""
+            # Startup isn't instant (SQLite migrations, Bonjour, lifespan tasks
+            # all run before uvicorn binds), so poll instead of one-shotting —
+            # a single immediate curl races the bind and fails spuriously.
+            healthy=""
+            for i in $(seq 1 30); do
+              if curl -sfS http://localhost:8000/health 2>/dev/null; then
+                healthy=1
+                echo ""
+                break
+              fi
+              sleep 2
+            done
+            if [ -z "$healthy" ]; then
+              echo "service did not become healthy within 60s"
+              sudo journalctl -u retrace --no-pager -n 50
+              exit 1
+            fi
             echo "::endgroup::"
