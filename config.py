@@ -25,6 +25,9 @@ GEMINI_MODEL = "gemini-2.5-pro"
 # models/procedure.py (new/renamed step fields), oracle criteria phrasing, or
 # clip ffmpeg flags. Leaving it unchanged means unrelated deploys (routers, iOS,
 # typo fixes) trigger no re-extraction — the whole point of the gate.
+# NOTE: steps.display_summary (2026-07-02) was deliberately NOT bumped for —
+# existing rows were backfilled via backfill_summaries.py instead, to avoid
+# wholesale-overwriting hand-edited parts glossaries and step text.
 EXTRACTION_PIPELINE_VERSION = os.environ.get(
     "RETRACE_EXTRACTION_VERSION",
     "2026-07-02-parts-glossary",

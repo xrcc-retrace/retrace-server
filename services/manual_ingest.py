@@ -245,6 +245,7 @@ async def ingest_manual(
                 "step_number": s.step_number,
                 "title": s.title,
                 "description": s.description,
+                "display_summary": s.display_summary,
                 # Server-fill placeholder timestamps — the manual schema
                 # doesn't ask Pro for these, so we synthesize 0/30/60…
                 # for API compatibility with the database layer.

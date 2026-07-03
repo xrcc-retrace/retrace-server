@@ -81,7 +81,7 @@ Separately from the steps, build the procedure-level `parts` list: every DISTINC
 - When the kit contains two parts that look alike (e.g. mandrels or nose pieces of different sizes), explicitly state how to tell them apart in BOTH entries.
 - One entry per part — no duplicates across steps; describe the part itself, not what is done with it.
 
-Output JSON matching the GeminiVideoProcedureOutput schema. Field-level shape requirements (title format, description length, tips/warnings, completion_criteria observability) live in the response schema's field descriptions — follow those."""
+Output JSON matching the GeminiVideoProcedureOutput schema. Field-level shape requirements (title format, description length, display_summary brevity, tips/warnings, completion_criteria observability) live in the response schema's field descriptions — follow those."""
 
 
 _client: genai.Client | None = None

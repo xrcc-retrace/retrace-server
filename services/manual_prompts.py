@@ -40,7 +40,7 @@ Rules:
 
 A separate vision model later confirms each step by comparing the learner's live camera frame to `completion_criteria`, so write that field as a single PRESENT-TENSE spatial/LED end-state asserting what IS visible (positive presence/configuration, never absence, removal, motion, or "no longer" — the model sees a state, not a change) and set `visual_verifiability` (reliable / marginal / none) per its field description — use `none` when the step has no single-frame visual consequence (a button press, a wait, fine alignment).
 
-Field-level shape requirements (per-step title, description, tips, warnings, completion_criteria, error_criteria, visual_verifiability, step cap) live in the response schema (GeminiManualProcedureOutput) — follow the field descriptions there.
+Field-level shape requirements (per-step title, description, display_summary, tips, warnings, completion_criteria, error_criteria, visual_verifiability, step cap) live in the response schema (GeminiManualProcedureOutput) — follow the field descriptions there.
 
 Output JSON matching the GeminiManualProcedureOutput schema."""
 
@@ -59,6 +59,6 @@ Rules:
 
 A separate vision model later confirms each step by comparing the learner's live camera frame to `completion_criteria`, so write that field as a single PRESENT-TENSE spatial/LED end-state asserting what IS visible (positive presence/configuration, never absence, removal, motion, or "no longer" — the model sees a state, not a change) and set `visual_verifiability` (reliable / marginal / none) per its field description — use `none` when the step has no single-frame visual consequence (a button press, a wait, fine alignment).
 
-Field-level shape requirements (per-step title, description, tips, warnings, completion_criteria, error_criteria, visual_verifiability, step cap) live in the response schema (GeminiManualProcedureOutput) — follow the field descriptions there.
+Field-level shape requirements (per-step title, description, display_summary, tips, warnings, completion_criteria, error_criteria, visual_verifiability, step cap) live in the response schema (GeminiManualProcedureOutput) — follow the field descriptions there.
 
 Output JSON matching the GeminiManualProcedureOutput schema."""

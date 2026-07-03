@@ -142,7 +142,7 @@ main-local-server-test/
 ├── config.py                  # Paths, GEMINI_API_KEY, GEMINI_MODEL, RETRACE_LIVE_MODEL, RETRACE_ORACLE_MODEL (default gemini-2.5-flash), FFMPEG_PATH (auto-creates data dirs on import)
 ├── requirements.txt
 ├── models/
-│   ├── procedure.py           # Per-flow Gemini structured-output schemas (GeminiVideoProcedureOutput / GeminiManualProcedureOutput / GeminiWebProcedureOutput off a shared _BaseProcedureStep) + Procedure / ProcedureStep (API models, with completion_criteria, error_criteria, visual_verifiability, clip_status, icon_symbol/icon_emoji/category, sources, parts). visual_verifiability is the `reliable|marginal|none` oracle gate (VisualVerifiability). Plus ProcedureSource (cited web URLs), ProcedurePart (visual parts glossary — video flow only), and StepBoundingBox. source_type ∈ {video, manual, web}
+│   ├── procedure.py           # Per-flow Gemini structured-output schemas (GeminiVideoProcedureOutput / GeminiManualProcedureOutput / GeminiWebProcedureOutput off a shared _BaseProcedureStep) + Procedure / ProcedureStep (API models, with display_summary (condensed ≤160-char lens-card text), completion_criteria, error_criteria, visual_verifiability, clip_status, icon_symbol/icon_emoji/category, sources, parts). visual_verifiability is the `reliable|marginal|none` oracle gate (VisualVerifiability). Plus ProcedureSource (cited web URLs), ProcedurePart (visual parts glossary — video flow only), and StepBoundingBox. source_type ∈ {video, manual, web}
 │   ├── session.py             # Pydantic models for session start/state, StepCompletion (method: "visual" | "verbal"), tool call req/res, ephemeral token response
 │   └── troubleshoot.py        # Troubleshoot-mode request/response models (session start, state, handoff, manual upload/status, identified product, candidate procedure, diagnostic log entry)
 ├── routers/
@@ -187,6 +187,7 @@ main-local-server-test/
 ├── reprocess_clips.py         # Re-run clip extraction for completed procedures without hitting Gemini again (after tweaking ffmpeg flags)
 ├── reset_data.py              # Wipe all user-generated data (DB rows, uploads, clips) — interactive by default, --yes / --dry-run / --force flags. Preserves code, .venv, .env, voice_previews.
 ├── backfill_icons.py          # One-shot: render and cache Iconify PNGs for procedures predating the icon system
+├── backfill_summaries.py      # One-shot: Flash-condense step descriptions into display_summary (lens glance text) for procedures predating the field — the deliberate alternative to an extraction-version bump
 ├── validate_voice_commands.py # Lint voice_commands.yaml (schema, uniqueness, referenced-from-code checks)
 ├── voice_commands.yaml        # Single source of truth for prompt utterances; designer-editable
 ├── test_live_session.py       # Ad-hoc integration test that drives a Gemini Live session against a running server
@@ -239,7 +240,7 @@ main-local-server-test/
 | `GET` | `/api/procedures` | List all (newest first). Includes `status` (`processing` / `completed` / `completed_partial` / `failed`) and `step_count`. |
 | `GET` | `/api/procedures/{id}` | One procedure with all steps (includes `completion_criteria`, `clip_status`). |
 | `PUT` | `/api/procedures/{id}` | Update `title`, `description`, and/or reorder steps via `step_order: [old_step_number, ...]`. |
-| `PUT` | `/api/procedures/{id}/steps/{n}` | Update a single step's fields (`title`, `description`, `tips`, `warnings`, `timestamp_start`, `timestamp_end`). |
+| `PUT` | `/api/procedures/{id}/steps/{n}` | Update a single step's fields (`title`, `description`, `display_summary`, `tips`, `warnings`, `timestamp_start`, `timestamp_end`, `error_criteria`, `visual_verifiability`). |
 | `DELETE` | `/api/procedures/{id}` | Delete procedure + cascade steps. |
 | `GET` | `/api/clips/{id}/step_{n}.mp4` | Per-step clip (H.264+AAC, faststart). |
 | `GET` | `/api/clips/{id}/step_{n}.jpg` | On-demand, disk-cached first-frame JPEG poster of the step clip (for the lens-side `MWDATDisplay.Image` thumbnail, which can't take video frames). |
@@ -291,7 +292,7 @@ These settings are locked into every ephemeral token so the phone can't change t
 - `data/clips/{procedure_id}/step_{n}.mp4` — per-step clips.
 - `data/retrace.db` — SQLite (WAL). Two tables:
   - `procedures(id, title, description, total_duration, source_video, created_at, status, error_message, source_type, icon_symbol, icon_emoji, category, sources, parts)` — the trailing columns are added via lightweight ALTER-TABLE migrations. `parts` is a JSON array of `{name, appearance}` visual-glossary entries (video flow only; `'[]'` elsewhere).
-  - `steps(id, procedure_id, step_number, title, description, timestamp_start, timestamp_end, tips, warnings, completion_criteria, error_criteria, visual_verifiability, clip_url, clip_status)` — `error_criteria` is a JSON array of observable error states (see Interject below); `visual_verifiability` is `reliable|marginal|none` (the oracle gate; legacy rows default `reliable`).
+  - `steps(id, procedure_id, step_number, title, description, display_summary, timestamp_start, timestamp_end, tips, warnings, completion_criteria, error_criteria, visual_verifiability, clip_url, clip_status)` — `error_criteria` is a JSON array of observable error states (see Interject below); `visual_verifiability` is `reliable|marginal|none` (the oracle gate; legacy rows default `reliable`); `display_summary` is the condensed (≤160 char) lens-card text — produced by all three extraction flows, backfilled for legacy rows by `backfill_summaries.py`, and never fed to the Live prompt (Live keeps the full description).
   - `tips` and `warnings` are JSON-encoded arrays.
   - `UNIQUE(procedure_id, step_number)` — reorder logic uses a two-pass negative-then-positive trick to avoid unique-constraint violations.
 - Sessions are **in-memory only** (a `dict` in `services/session.py`). They die with the process.

@@ -104,6 +104,7 @@ async def process_video_into_procedure(
             step_number=step_num,
             title=s["title"],
             description=s["description"],
+            display_summary=s.get("display_summary", ""),
             timestamp_start=s["timestamp_start"],
             timestamp_end=s["timestamp_end"],
             tips=s.get("tips", []),

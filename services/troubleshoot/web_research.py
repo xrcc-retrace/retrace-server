@@ -139,7 +139,7 @@ _STEP2_SYSTEM = """You are a procedure analyst. Given a research brief about how
 
 Guidelines:
 - Each step must be a discrete, actionable unit a first-time learner can perform safely.
-- Field-level shape requirements live in the response schema (GeminiWebProcedureOutput) — follow the field descriptions there for title, description, tips, warnings, completion_criteria, and the step cap.
+- Field-level shape requirements live in the response schema (GeminiWebProcedureOutput) — follow the field descriptions there for title, description, display_summary, tips, warnings, completion_criteria, and the step cap.
 
 Output JSON matching the GeminiWebProcedureOutput schema."""
 
@@ -279,6 +279,7 @@ async def research_and_extract(
             "step_number": s.step_number,
             "title": s.title,
             "description": s.description,
+            "display_summary": s.display_summary,
             # Web procedures aren't backed by a video — synthesize
             # placeholder timestamps server-side so Pro doesn't have to
             # spend any output tokens on numbers nobody reads.

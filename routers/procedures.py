@@ -46,6 +46,7 @@ class ProcedureUpdateBody(BaseModel):
 class StepUpdateBody(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
+    display_summary: Optional[str] = None
     tips: Optional[list[str]] = None
     warnings: Optional[list[str]] = None
     timestamp_start: Optional[float] = None
@@ -114,6 +115,7 @@ async def update_step_endpoint(procedure_id: str, step_number: int, body: StepUp
         step_number,
         title=body.title,
         description=body.description,
+        display_summary=body.display_summary,
         tips=body.tips,
         warnings=body.warnings,
         timestamp_start=body.timestamp_start,

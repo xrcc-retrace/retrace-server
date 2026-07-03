@@ -47,6 +47,10 @@ class ProcedureStep(BaseModel):
     timestamp_end: float
     tips: list[str] = []
     warnings: list[str] = []
+    # Condensed 1-2 sentence version of `description` for the glasses lens
+    # (the lens card truncates long text; Live still speaks the full
+    # description). Empty for legacy rows — clients fall back to description.
+    display_summary: str = ""
     completion_criteria: str = ""
     # Observable visual error states the verification oracle watches for.
     # Populated by Gemini 2.5 Pro during extraction and editable in the expert
@@ -167,6 +171,17 @@ class _BaseProcedureStep(BaseModel):
         description=(
             "1-3 sentences a first-time learner can follow. Concrete "
             "actions, not paraphrased platitudes."
+        ),
+    )
+    display_summary: str = Field(
+        default="",
+        description=(
+            "Condensed version of the description for a small heads-up "
+            "display: 1-2 short sentences, max 160 characters, self-contained "
+            "enough to act on. Keep the key action, part names, and "
+            "quantities; cut rationale, caveats, and anything already covered "
+            "by tips/warnings. Always materially shorter than the "
+            "description — never a copy of it."
         ),
     )
     tips: list[str] = Field(

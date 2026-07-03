@@ -91,6 +91,10 @@ def init_db():
         # Per-step gate for the verification oracle: 'reliable' | 'marginal' |
         # 'none'. Legacy rows default to 'reliable' (see models.procedure).
         ("visual_verifiability", "TEXT NOT NULL DEFAULT 'reliable'"),
+        # Condensed lens-card text (see models.procedure.ProcedureStep).
+        # Legacy rows stay '' — backfilled by backfill_summaries.py, not a
+        # pipeline-version bump.
+        ("display_summary", "TEXT NOT NULL DEFAULT ''"),
     ]:
         try:
             conn.execute(f"ALTER TABLE steps ADD COLUMN {col} {definition}")
@@ -192,10 +196,12 @@ def save_procedure(procedure: dict, steps: list[dict]):
         for step in steps:
             conn.execute(
                 """INSERT INTO steps (procedure_id, step_number, title, description,
+                                      display_summary,
                                       timestamp_start, timestamp_end, tips, warnings,
                                       completion_criteria, error_criteria,
                                       visual_verifiability, clip_url, clip_status)
                    VALUES (:procedure_id, :step_number, :title, :description,
+                           :display_summary,
                            :timestamp_start, :timestamp_end, :tips, :warnings,
                            :completion_criteria, :error_criteria,
                            :visual_verifiability, :clip_url, :clip_status)""",
@@ -204,6 +210,7 @@ def save_procedure(procedure: dict, steps: list[dict]):
                     "step_number": step["step_number"],
                     "title": step["title"],
                     "description": step["description"],
+                    "display_summary": step.get("display_summary", "") or "",
                     "timestamp_start": step["timestamp_start"],
                     "timestamp_end": step["timestamp_end"],
                     "tips": json.dumps(step.get("tips", [])),
@@ -366,6 +373,7 @@ def update_procedure_fields(procedure_id: str, title: str | None = None,
 
 def update_step_fields(procedure_id: str, step_number: int,
                        title: str | None = None, description: str | None = None,
+                       display_summary: str | None = None,
                        tips: list[str] | None = None, warnings: list[str] | None = None,
                        timestamp_start: float | None = None,
                        timestamp_end: float | None = None,
@@ -390,6 +398,11 @@ def update_step_fields(procedure_id: str, step_number: int,
             conn.execute(
                 "UPDATE steps SET description = ? WHERE procedure_id = ? AND step_number = ?",
                 (description, procedure_id, step_number),
+            )
+        if display_summary is not None:
+            conn.execute(
+                "UPDATE steps SET display_summary = ? WHERE procedure_id = ? AND step_number = ?",
+                (display_summary, procedure_id, step_number),
             )
         if tips is not None:
             conn.execute(
