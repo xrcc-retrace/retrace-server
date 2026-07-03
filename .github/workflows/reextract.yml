@@ -1,0 +1,72 @@
+name: Re-extract Procedures
+
+# Manually dispatched: re-runs Gemini extraction over every video procedure
+# on the deployed server (reextract_procedures.py --apply). Use after the
+# extraction prompt changes and the new code has been deployed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      procedure:
+        description: "Optional procedure id prefix (blank = all video procedures)"
+        required: false
+        default: ""
+      dry_run:
+        description: "Preview only (no writes)"
+        type: boolean
+        default: false
+
+jobs:
+  reextract:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: retrace-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Re-extract via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          INPUT_PROCEDURE: ${{ inputs.procedure }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 60m
+          envs: INPUT_PROCEDURE,INPUT_DRY_RUN
+          script: |
+            set -euo pipefail
+            cd ~/main-local-server-test
+            source .venv/bin/activate
+
+            MODE="--apply"
+            if [ "$INPUT_DRY_RUN" = "true" ]; then
+              MODE="--dry-run"
+            fi
+
+            PROC_ARG=""
+            if [ -n "$INPUT_PROCEDURE" ]; then
+              if ! printf '%s' "$INPUT_PROCEDURE" | grep -Eq '^[0-9a-f-]+$'; then
+                echo "invalid procedure id: $INPUT_PROCEDURE" >&2
+                exit 1
+              fi
+              PROC_ARG="--procedure $INPUT_PROCEDURE"
+            fi
+
+            if [ "$MODE" = "--apply" ]; then
+              echo "::group::backup database"
+              export BACKUP="data/retrace.db.bak-reextract-$(date +%Y%m%d-%H%M%S)"
+              python - <<'PY'
+            import os, sqlite3
+            src = sqlite3.connect("data/retrace.db")
+            dst = sqlite3.connect(os.environ["BACKUP"])
+            src.backup(dst)
+            dst.close(); src.close()
+            PY
+              echo "backup at $BACKUP"
+              echo "::endgroup::"
+            fi
+
+            echo "::group::reextract $MODE $PROC_ARG"
+            python reextract_procedures.py $MODE $PROC_ARG
+            echo "::endgroup::"
