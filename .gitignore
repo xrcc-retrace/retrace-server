@@ -28,6 +28,10 @@ data/lens_encode_version
 
 # Eval harness dev artifacts — test-input frames harvested from expert videos
 # and per-run report outputs. The eval *source* under evals/ is tracked; these
-# two subtrees are large (frames) or ephemeral (reports) and dev-only.
-evals/fixtures/
+# subtrees are large (frames) or ephemeral (reports) and dev-only — EXCEPT
+# fixtures/staged/, which holds hand-curated ground-truth label frames
+# (step_{n}_{done|notdone|errorK}) that eval_oracle scores against; those are
+# labels, not derived artifacts, and are tracked.
+evals/fixtures/*
+!evals/fixtures/staged/
 evals/reports/

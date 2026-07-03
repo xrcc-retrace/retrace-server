@@ -45,9 +45,12 @@ RETRACE_LIVE_MODEL = os.environ.get(
 # learner's current camera frame against the step's spatial end-state (and
 # error states) so Gemini Live never has to do visual verification itself.
 # Override via RETRACE_ORACLE_MODEL for a fast swap without a code change.
+# gemini-3.5-flash picked 2026-07-02 via evals/eval_oracle.py matrix: best
+# early-advance FP (15.2% vs 21.2%) + interject FP + staged-fixture recall
+# at p95≈2.1s. Runner-up gemini-3-flash-preview: +recall but 20% interject FP.
 RETRACE_ORACLE_MODEL = os.environ.get(
     "RETRACE_ORACLE_MODEL",
-    "gemini-2.5-flash",
+    "gemini-3.5-flash",
 )
 
 # Find ffmpeg binary

@@ -84,6 +84,18 @@ def _build_cases(procs: list[dict]) -> list[dict]:
                 if "done" in prev_frames:
                     cases.append(dict(proc=p["id"], step=s, expect=False, kind="neg_prevdone",
                                       frame=prev_frames["done"], ref=ref, glossary=glossary))
+            # Human-staged extras (evals/fixtures/staged/) — higher-fidelity
+            # labels than the fractional harvest. `done` frames are hand-picked
+            # true end-states (the auto near_done frame is mid-action on videos
+            # where the change lands in the step's final second); `notdone` are
+            # hand-picked hard negatives.
+            staged = c.staged_step_frames(p["id"], n)
+            for f in staged.get("done", []):
+                cases.append(dict(proc=p["id"], step=s, expect=True, kind="pos_staged",
+                                  frame=f, ref=ref, glossary=glossary))
+            for f in staged.get("notdone", []):
+                cases.append(dict(proc=p["id"], step=s, expect=False, kind="neg_staged",
+                                  frame=f, ref=ref, glossary=glossary))
     return cases
 
 
@@ -170,6 +182,54 @@ async def _run_interject(procs: list[dict], log: c.EventLog) -> dict:
             "fp_rate": (flagged / total if total else 0.0), "hits": hits}
 
 
+async def _run_error_recall(procs: list[dict], log: c.EventLog) -> dict:
+    """Score staged wrong-state frames: does the oracle flag the right error?
+
+    Frames named step_{n}_error{K}[_*] in evals/fixtures/staged/ show a real,
+    deliberately staged mistake matching error_criteria[K]. A hit = the oracle
+    returns that error_index. This is the only measure of error RECALL — the
+    interject pass above only measures false positives on correct frames.
+    """
+    sem = asyncio.Semaphore(CONCURRENCY)
+    hits = misses = 0
+    detail = []
+    lock = asyncio.Lock()
+
+    async def _one(proc_id, step, glossary, frame_path, expect_idx):
+        nonlocal hits, misses
+        async with sem:
+            verdict = await verify_step(frame_path.read_bytes(), step, None,
+                                        glossary, **ORACLE_KW)
+        got = verdict.error_index if verdict else None
+        async with lock:
+            if got == expect_idx:
+                hits += 1
+            else:
+                misses += 1
+                detail.append({"proc": proc_id, "step": step["step_number"],
+                               "frame": frame_path.name, "expect": expect_idx, "got": got})
+            log.write(error_recall=True, proc=proc_id, step=step["step_number"],
+                      frame=frame_path.name, expect=expect_idx, got=got)
+
+    tasks = []
+    for p in procs:
+        for s in p["steps"]:
+            staged = c.staged_step_frames(p["id"], s["step_number"])
+            for label, frames in staged.items():
+                if not label.startswith("error"):
+                    continue
+                try:
+                    idx = int(label.removeprefix("error"))
+                except ValueError:
+                    continue
+                for f in frames:
+                    tasks.append(_one(p["id"], s, p.get("parts") or None, f, idx))
+    await asyncio.gather(*tasks)
+    total = hits + misses
+    return {"hits": hits, "total": total,
+            "rate": (hits / total if total else None), "misses": detail}
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, help="Cap number of procedures")
@@ -232,6 +292,16 @@ async def main() -> None:
     # invert: we want a LOW fp_rate, so gate on (1 - fp_rate)
     c.print_gate("clean frames left un-flagged", 1.0 - inter["fp_rate"],
                  f"{inter['flagged']}/{inter['total']} frames wrongly flagged")
+
+    err = await _run_error_recall(procs, log)
+    if err["total"]:
+        print()
+        c.header("Error recall (staged wrong-state frames correctly flagged)")
+        c.print_gate("staged errors caught", err["rate"],
+                     f"{err['hits']}/{err['total']}")
+        for m in err["misses"]:
+            print(f"  MISS {m['proc'][:8]} step {m['step']} ({m['frame']}) "
+                  f"expected error{m['expect']}, got {m['got']}")
 
     # False-positive dump — the only things a human needs to eyeball.
     header_printed = False
