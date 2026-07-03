@@ -12,6 +12,12 @@ manual/web path). Also measures the interject false-positive rate: how often the
 oracle flags an error on a frame where the learner is doing it correctly.
 
     python evals/eval_oracle.py [--limit N] [--grounding both|image|text] [--smoke]
+        [--no-parts] [--model MODEL] [--thinking-budget N]
+
+By default the oracle receives each procedure's parts glossary (the production
+path); `--no-parts` withholds it for the A/B. `--model` / `--thinking-budget`
+override RETRACE_ORACLE_MODEL / 0 for candidate-model matrices; per-call
+latency (p50/p95) is reported either way.
 
 Positives use the ~90% frame, never the exact reference JPEG, so the oracle
 can't win by matching identical bytes.
@@ -19,6 +25,8 @@ can't win by matching identical bytes.
 
 import argparse
 import asyncio
+import statistics
+import time
 
 import _common as c
 
@@ -27,10 +35,22 @@ from services.step_oracle import verify_step
 
 CONCURRENCY = 5
 
+# Set from CLI args in main(); threaded into every verify_step call so the
+# whole eval runs under one candidate config.
+ORACLE_KW: dict = {}
+
 
 def _confident_complete(verdict) -> bool:
     """Mirror the endpoint: a 'complete' only advances above the floor."""
     return bool(verdict and verdict.complete and verdict.confidence >= _ORACLE_CONFIDENCE_FLOOR)
+
+
+def _latency_line(samples_s: list[float]) -> str:
+    if not samples_s:
+        return "latency: n/a"
+    p50 = statistics.median(samples_s)
+    p95 = sorted(samples_s)[max(0, int(len(samples_s) * 0.95) - 1)]
+    return f"latency p50={p50:.2f}s p95={p95:.2f}s (n={len(samples_s)})"
 
 
 def _build_cases(procs: list[dict]) -> list[dict]:
@@ -49,20 +69,21 @@ def _build_cases(procs: list[dict]) -> list[dict]:
             if "done" not in frames or "near_done" not in frames:
                 continue
             ref = frames["done"].read_bytes()
+            glossary = p.get("parts") or None
             # Positive: near-done frame should read as complete.
             cases.append(dict(proc=p["id"], step=s, expect=True, kind="pos",
-                              frame=frames["near_done"], ref=ref))
+                              frame=frames["near_done"], ref=ref, glossary=glossary))
             # Negative A: the start frame should NOT read as complete.
             if "start" in frames:
                 cases.append(dict(proc=p["id"], step=s, expect=False, kind="neg_start",
-                                  frame=frames["start"], ref=ref))
+                                  frame=frames["start"], ref=ref, glossary=glossary))
             # Negative B: the prior step's done frame (this step not yet begun).
             prev = steps.get(n - 1)
             if prev is not None:
                 prev_frames = c.harvest_step_frames(p["id"], n - 1, c.clip_path_for(p["id"], n - 1))
                 if "done" in prev_frames:
                     cases.append(dict(proc=p["id"], step=s, expect=False, kind="neg_prevdone",
-                                      frame=prev_frames["done"], ref=ref))
+                                      frame=prev_frames["done"], ref=ref, glossary=glossary))
     return cases
 
 
@@ -70,11 +91,16 @@ async def _run_mode(cases: list[dict], use_reference: bool, log: c.EventLog) -> 
     sem = asyncio.Semaphore(CONCURRENCY)
     results: list[dict] = []
 
+    latencies: list[float] = []
+
     async def _one(case: dict):
         async with sem:
             current = case["frame"].read_bytes()
             ref = case["ref"] if use_reference else None
-            verdict = await verify_step(current, case["step"], ref)
+            t0 = time.monotonic()
+            verdict = await verify_step(current, case["step"], ref,
+                                        case.get("glossary"), **ORACLE_KW)
+            latencies.append(time.monotonic() - t0)
         predicted = _confident_complete(verdict)
         row = {
             "proc": case["proc"], "step": case["step"]["step_number"],
@@ -99,7 +125,8 @@ async def _run_mode(cases: list[dict], use_reference: bool, log: c.EventLog) -> 
     recall = tp / (tp + fn) if (tp + fn) else 0.0
     fp_rate = fp / (fp + tn) if (fp + tn) else 0.0
     return {"tp": tp, "fn": fn, "fp": fp, "tn": tn, "precision": precision,
-            "recall": recall, "fp_rate": fp_rate, "rows": results}
+            "recall": recall, "fp_rate": fp_rate, "rows": results,
+            "latencies": latencies}
 
 
 async def _run_interject(procs: list[dict], log: c.EventLog) -> dict:
@@ -109,10 +136,11 @@ async def _run_interject(procs: list[dict], log: c.EventLog) -> dict:
     hits = []
     lock = asyncio.Lock()
 
-    async def _one(proc_id, step, frame_path):
+    async def _one(proc_id, step, frame_path, glossary):
         nonlocal flagged, total
         async with sem:
-            verdict = await verify_step(frame_path.read_bytes(), step, None)
+            verdict = await verify_step(frame_path.read_bytes(), step, None,
+                                        glossary, **ORACLE_KW)
         async with lock:
             total += 1
             if verdict and verdict.error_index is not None:
@@ -136,7 +164,7 @@ async def _run_interject(procs: list[dict], log: c.EventLog) -> dict:
             frames = c.harvest_step_frames(p["id"], s["step_number"], clip)
             for label in ("start", "mid", "near_done"):
                 if label in frames:
-                    tasks.append(_one(p["id"], s, frames[label]))
+                    tasks.append(_one(p["id"], s, frames[label], p.get("parts") or None))
     await asyncio.gather(*tasks)
     return {"flagged": flagged, "total": total,
             "fp_rate": (flagged / total if total else 0.0), "hits": hits}
@@ -149,9 +177,21 @@ async def main() -> None:
     ap.add_argument("--smoke", action="store_true", help="Just 2 procedures")
     ap.add_argument("--procedure", action="append",
                     help="Only these procedure id(s) (prefix ok, repeatable)")
+    ap.add_argument("--no-parts", action="store_true",
+                    help="Withhold the parts glossary from the oracle (A/B)")
+    ap.add_argument("--model", help="Override RETRACE_ORACLE_MODEL for every call")
+    ap.add_argument("--thinking-budget", type=int,
+                    help="Override the oracle's thinking budget (default 0)")
     args = ap.parse_args()
 
+    if args.model:
+        ORACLE_KW["model"] = args.model
+    if args.thinking_budget is not None:
+        ORACLE_KW["thinking_budget"] = args.thinking_budget
+
     procs = c.procedures_with_clips()
+    if args.no_parts:
+        procs = [{**p, "parts": []} for p in procs]
     if args.procedure:
         procs = [p for p in procs if any(p["id"].startswith(x) for x in args.procedure)]
     if args.smoke:
@@ -162,6 +202,10 @@ async def main() -> None:
     cases = _build_cases(procs)
     log = c.EventLog("eval_oracle")
     c.header(f"Oracle accuracy — {len(procs)} procedure(s), {len(cases)} labeled frame-cases")
+    from config import RETRACE_ORACLE_MODEL as _default_model
+    print(f"  model = {ORACLE_KW.get('model') or _default_model}"
+          f"  thinking_budget = {ORACLE_KW.get('thinking_budget', 0)}"
+          f"  parts glossary = {'OFF' if args.no_parts else 'on'}")
     print(f"  confidence floor = {_ORACLE_CONFIDENCE_FLOOR}  (matches /verify)\n")
 
     modes = []
@@ -179,7 +223,8 @@ async def main() -> None:
         c.print_gate(f"{name} precision (few false advances)", stats["precision"])
         c.print_gate(f"{name} recall (catches real completions)", stats["recall"])
         print(f"    false-positive (early-advance) rate: "
-              f"{c._C['bold']}{stats['fp_rate']*100:.1f}%{c._C['reset']}")
+              f"{c._C['bold']}{stats['fp_rate']*100:.1f}%{c._C['reset']}"
+              f"    {_latency_line(stats['latencies'])}")
 
     inter = await _run_interject(procs, log)
     print()

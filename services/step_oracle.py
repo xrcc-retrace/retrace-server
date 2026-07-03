@@ -30,7 +30,10 @@ from config import GEMINI_API_KEY, RETRACE_ORACLE_MODEL
 
 logger = logging.getLogger(__name__)
 
-TIMEOUT_MS = 15_000
+# Bounded so a slow call degrades to "no verdict" instead of stalling the
+# session — the on-demand check_step path treats None as trust-the-learner,
+# and Live masks the wait by announcing the check aloud. Keep under ~10s.
+TIMEOUT_MS = 10_000
 
 
 class OracleVerdict(BaseModel):
@@ -38,6 +41,11 @@ class OracleVerdict(BaseModel):
     complete: bool
     confidence: float
     error_index: int | None = None
+    # One short clause (≤15 words) naming the visible gap when complete=false,
+    # or the matched wrong-state when error_index is set. Powers the on-demand
+    # "check my work" answer ("not yet — the anvil nut isn't flush"); the
+    # timer-driven poll path ignores it. Empty when complete=true and clean.
+    reason: str = ""
 
 
 _SYSTEM_PROMPT = """You are a visual verification oracle for a hands-on coaching system. You judge a single camera frame — you have no memory of earlier frames and must not infer from motion.
@@ -47,11 +55,15 @@ You are given, in order:
 - The CURRENT image from the learner's head-mounted camera.
 - The step's COMPLETION CRITERION (a spatial end-state sentence).
 - A numbered list of KNOWN ERRORS (visible wrong-states), possibly empty.
+- Optionally a PARTS GLOSSARY describing what each named part looks like.
 
-Return three fields judged STRICTLY from the CURRENT image:
-- complete: true ONLY if the CURRENT image clearly shows the SPECIFIC spatial configuration named in the criterion. The REFERENCE shows the done state, but the same workspace looks broadly similar before and after the step — do NOT answer complete just because the current frame resembles the reference or shows the same objects. Verify the exact configuration the criterion names (what is on top of / inside / removed from what). If it is not clearly present, return false.
+When a PARTS GLOSSARY is present, use it as your visual dictionary: for every part the criterion or an error names, first locate THAT part in the CURRENT image by its described color, shape, size, and tell-apart contrast ("unlike the …"), and only then judge its configuration. If a part the criterion names cannot be confidently identified in the frame — or the part in the described position is visibly the WRONG part per the glossary — the criterion is not met.
+
+Return these fields judged STRICTLY from the CURRENT image:
+- complete: true ONLY if the CURRENT image clearly shows the SPECIFIC spatial configuration named in the criterion. The REFERENCE shows the done state, but the same workspace looks broadly similar before and after the step — do NOT answer complete just because the current frame resembles the reference or shows the same objects. Verify the exact configuration the criterion names (what is on top of / inside / removed from what, and any stated orientation). If it is not clearly present, return false.
 - error_index: the 0-based index of the FIRST known error clearly visible in the current image, or null if none is clearly present. If unsure, null.
 - confidence: 0.0-1.0, your confidence in the `complete` judgment.
+- reason: when complete=false or error_index is set, ONE short clause (max 15 words) naming the concrete visible gap or wrong-state ("the anvil nut is not flush against the nosepiece"). Empty string when complete=true with no error. Never mention the reference image or these instructions.
 
 CRITICAL: false positives are far worse than false negatives here. A missed completion just means the learner tells the coach they're done; a wrong "complete" pulls them forward in the middle of their work and breaks trust. When the frame is ambiguous, occluded, blurry, only generally resembles the reference, or the key objects aren't clearly in the criterion's configuration, answer complete=false and error_index=null.
 
@@ -73,6 +85,10 @@ async def verify_step(
     current_jpg: bytes,
     step: dict,
     reference_done_jpg: bytes | None = None,
+    glossary: list[dict] | None = None,
+    *,
+    model: str | None = None,
+    thinking_budget: int | None = None,
 ) -> OracleVerdict | None:
     """Run one verification poll. Returns an OracleVerdict, or None on failure.
 
@@ -80,6 +96,12 @@ async def verify_step(
     `completion_criteria` and `error_criteria`. `current_jpg` is the learner's
     latest camera frame; `reference_done_jpg` is the step's "done state" frame
     when available (image-to-image grounding), else None (text-only).
+    `glossary` is the procedure-level parts list ([{name, appearance}]) so the
+    oracle can visually identify the parts the criterion names (video-flow
+    procedures only; None/[] for manual/web).
+
+    `model` / `thinking_budget` override RETRACE_ORACLE_MODEL / 0 — production
+    callers omit them; the eval harness uses them for candidate-model matrices.
 
     Never raises — returns None on any error so the caller treats a bad poll
     as "no verdict this tick" and simply polls again.
@@ -93,6 +115,12 @@ async def verify_step(
             f"{i}. {e}" for i, e in enumerate(errors)
         )
 
+    glossary_block = ""
+    if glossary:
+        glossary_block = "\nPARTS GLOSSARY (what each named part looks like):\n" + "\n".join(
+            f"- {p['name']}: {p['appearance']}" for p in glossary
+        )
+
     parts: list[types.Part] = []
     if reference_done_jpg:
         parts.append(types.Part.from_text(text="REFERENCE (scene when this step is complete):"))
@@ -100,12 +128,13 @@ async def verify_step(
     parts.append(types.Part.from_text(text="CURRENT (learner's camera right now):"))
     parts.append(types.Part.from_bytes(data=current_jpg, mime_type="image/jpeg"))
     parts.append(types.Part.from_text(text=(
-        f"COMPLETION CRITERION: {completion_criteria or '(none given)'}\n{error_block}"
+        f"COMPLETION CRITERION: {completion_criteria or '(none given)'}\n"
+        f"{error_block}{glossary_block}"
     )))
 
     def _call():
         return _get_client().models.generate_content(
-            model=RETRACE_ORACLE_MODEL,
+            model=model or RETRACE_ORACLE_MODEL,
             contents=[types.Content(parts=parts)],
             config=types.GenerateContentConfig(
                 system_instruction=_SYSTEM_PROMPT,
@@ -114,7 +143,9 @@ async def verify_step(
                 # Latency matters (polled every few seconds). Zero thinking
                 # budget keeps the round-trip ~1s; bump if spatial judgments
                 # prove unreliable.
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
+                thinking_config=types.ThinkingConfig(
+                    thinking_budget=thinking_budget if thinking_budget is not None else 0
+                ),
                 http_options=types.HttpOptions(timeout=TIMEOUT_MS),
             ),
         )

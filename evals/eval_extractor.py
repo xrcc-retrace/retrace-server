@@ -101,8 +101,12 @@ def _frames_from_source(video_path: Path, step: dict, tmp_dir: Path) -> dict | N
 
 # --- closed-loop consistency -------------------------------------------------
 
-async def consistency_check(steps_with_frames: list[tuple], log: c.EventLog) -> dict:
+async def consistency_check(steps_with_frames: list[tuple], log: c.EventLog,
+                            parts_by_proc: dict | None = None) -> dict:
     """steps_with_frames: list of (proc_id, step, frames_dict).
+
+    `parts_by_proc` maps proc_id → parts glossary so the oracle runs with the
+    same visual dictionary production gives it.
 
     Reports TWO sub-metrics per step (they diverge, and the gap is itself the
     signal):
@@ -125,10 +129,13 @@ async def consistency_check(steps_with_frames: list[tuple], log: c.EventLog) -> 
         nonlocal text_pass, img_pass, both_pass, checked
         if step.get("visual_verifiability") == "none":
             return
+        glossary = (parts_by_proc or {}).get(proc_id) or None
         async with sem:
-            v_text = await verify_step(frames["done"].read_bytes(), step, None)
+            v_text = await verify_step(frames["done"].read_bytes(), step, None,
+                                       glossary)
             v_img = await verify_step(
-                frames["near_done"].read_bytes(), step, frames["done"].read_bytes())
+                frames["near_done"].read_bytes(), step, frames["done"].read_bytes(),
+                glossary)
         t_ok, i_ok = _confident(v_text), _confident(v_img)
         async with lock:
             checked += 1
@@ -290,7 +297,8 @@ async def main() -> None:
                 if f:
                     steps_with_frames.append((p["id"], s, f))
 
-    cons = await consistency_check(steps_with_frames, log)
+    parts_by_proc = {p["id"]: (p.get("parts") or None) for p in procs}
+    cons = await consistency_check(steps_with_frames, log, parts_by_proc)
     c.print_gate("steps oracle confirms (either grounding)", cons["rate"],
                  f"of {cons['checked']}")
     print(f"    criterion coherence (text-only)     : {cons['text_rate']*100:5.1f}%")
