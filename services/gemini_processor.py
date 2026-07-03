@@ -39,6 +39,13 @@ For each step, mentally compare the scene at the END of the previous step to the
   - "the lid has been screwed onto the bottle"      → "the lid sits flush on top of the bottle"
   - "a portion of the avocado has been eaten"       → (a delta; `none` unless a stable end-state is visible)
   - "the finger is no longer touching the escape key" → `none` (a released key looks identical to before the press)
+- Make the criterion SPATIALLY EXACT — the vision model can only check what the sentence names:
+  - Call every part by its EXACT name from the parts glossary you produce below ("the M6 mandrel", never "the pin" or "the piece"). The verifier uses the glossary to identify parts on camera, so criterion and glossary must share vocabulary.
+  - When a step joins, inserts, or mounts parts, state WHICH part sits in/on/through WHICH ("the anvil nut is threaded onto the mandrel tip", not "the parts are assembled").
+  - When a part has a visibly asymmetric feature (flange, taper, thread, label, cap), state its ORIENTATION relative to a stable landmark whenever a wrong orientation would look different in-frame ("the rivet nut sits on the mandrel with its flanged head against the nosepiece"). Skip orientation words for symmetric parts where no wrong orientation is visible.
+  - Rewrite the vague anti-patterns:
+    - "the parts are assembled together"   → "the rivet nut is threaded onto the mandrel, its flanged head flush against the nosepiece"
+    - "the piece is inserted"              → "the mandrel passes through the rivet nut, its threaded tip protruding past the flange"
   FORBIDDEN in completion_criteria: present-perfect/past ("has been", "has pressed", "has tapped"), motion verbs ("lifts off", "is lowered", "removes"), and any "no longer".
 - Set `visual_verifiability`:
   - `reliable` — a clear static spatial-configuration change detectable in one frame.
@@ -50,7 +57,7 @@ For the per-step `error_criteria` field, produce UP TO THREE observable visual e
 HARD RULES — every error must pass all of these:
 - Describes a COMMITTED, PERSISTENT wrong state visible in a single frame — a configuration the learner has actually settled into, not a transient absence or a not-yet-done state. Must NOT require counting events over time, measuring duration, or inferring what the learner meant.
 - Is NOT true during a normal pause. Never "X is not visible", "the hand is not touching …", or "not yet …" — those fire constantly while the learner simply looks away or rests between actions, causing false interjections.
-- Names the specific object and the specific wrong configuration (orientation, position, pairing, which sub-part is being touched). No vague nouns like "thing" or "item".
+- Names the specific object and the specific wrong configuration (orientation, position, pairing, which sub-part is being touched). No vague nouns like "thing" or "item" — use the part's EXACT name from the parts glossary, and for orientation errors name the visible feature that gives the mistake away ("flanged head facing away from the tool").
 - Contains NO judgment words ("careless", "sloppy", "wrong-ish"), NO cognitive claims ("seems confused", "distracted", "not paying attention"), NO abstract faults ("technique is off", "something is off", "not quite right"). These are not observable states.
 - The errors are mutually distinct — no paraphrases of the same mistake with different wording.
 
@@ -63,6 +70,7 @@ GOOD examples (note specificity and sentence form):
 - "The mouse is right-side up, but this step needs its base facing the camera."
 - "The container lid is still closed, though this step requires the container to be open before the learner continues."
 - "The learner is pressing a button other than the circular button at the center of the mouse's base."
+- "The rivet nut is threaded onto the mandrel backwards, with its flanged head facing away from the nosepiece."
 
 BAD examples — do NOT produce output in these shapes:
 - "The mouse is not visible in the camera view." — transient absence; true whenever the learner glances away. (Only allowed if the object's absence is itself the step's mistake.)
@@ -81,6 +89,7 @@ Separately from the steps, build the procedure-level `parts` list: every DISTINC
 - End EVERY entry's `appearance` with an explicit contrast against the part in THIS kit it is most likely to be confused with on camera — name what visibly separates them (length, solid vs hollow, threaded vs smooth, flanged vs plain, matte vs shiny, color). E.g. "unlike the rivet nut, the mandrel is longer, solid, and threaded on only one end." The learner sees these two parts as similar; your job is to give the coach the one visible cue that tells them apart.
 - If a part resembles nothing else in the kit, instead close with the single feature that makes it unmistakable.
 - One entry per part — no duplicates across steps; describe the part itself, not what is done with it.
+- These names are the CANONICAL VOCABULARY for the whole procedure: every `completion_criteria` and `error_criteria` sentence that mentions a part must reuse its glossary name verbatim.
 
 Output JSON matching the GeminiVideoProcedureOutput schema. Field-level shape requirements (title format, description length, display_summary brevity, tips/warnings, completion_criteria observability) live in the response schema's field descriptions — follow those."""
 

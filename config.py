@@ -30,7 +30,7 @@ GEMINI_MODEL = "gemini-2.5-pro"
 # wholesale-overwriting hand-edited parts glossaries and step text.
 EXTRACTION_PIPELINE_VERSION = os.environ.get(
     "RETRACE_EXTRACTION_VERSION",
-    "2026-07-02-parts-glossary",
+    "2026-07-02-spatial-criteria",
 )
 
 # Live model id baked into every ephemeral token. Override via
