@@ -141,6 +141,7 @@ async def reextract_one(proc: dict, apply: bool) -> dict | None:
         ready = n not in failed_set
         step_models.append(ProcedureStep(
             step_number=n, title=s["title"], description=s["description"],
+            display_summary=s.get("display_summary", ""),
             timestamp_start=s["timestamp_start"], timestamp_end=s["timestamp_end"],
             tips=s.get("tips", []), warnings=s.get("warnings", []),
             completion_criteria=s.get("completion_criteria", ""),
@@ -158,6 +159,9 @@ async def reextract_one(proc: dict, apply: bool) -> dict | None:
         "source_type": "video",
         "icon_symbol": out["icon_symbol"], "icon_emoji": out["icon_emoji"],
         "category": out["category"],
+        # save_procedure JSON-encodes parts; omitting this key silently wiped the
+        # glossary to [] on every re-extract (services/reprocess.py carries it).
+        "parts": out.get("parts", []),
     }
     save_procedure(procedure_dict, [m.model_dump() for m in step_models])
     # invalidate harvested eval frames so harvest re-cuts from the new clips
