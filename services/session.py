@@ -117,8 +117,11 @@ def advance_step(session_id: str, method: str = "verbal") -> dict:
         return {"status": "already_completed", "message": "All steps are already done."}
 
     # Any advance (visual or verbal) clears the oracle's per-step dwell streak
-    # so the next step starts its confirmation count from zero.
+    # so the next step starts its confirmation count from zero, and the
+    # insist-once done-claim marker so the new step needs a fresh oracle
+    # rejection before a repeated "done" can override it.
     session["_verify_streak"] = 0
+    session["_done_claim_step"] = None
 
     # Record completion of current step
     session["step_history"].append({
@@ -181,8 +184,10 @@ def go_to_step(session_id: str, step_number: int) -> dict:
 
     session["current_step"] = step_number
     session["status"] = "in_progress"
-    # Jumping steps invalidates any in-flight oracle dwell streak.
+    # Jumping steps invalidates any in-flight oracle dwell streak and any
+    # pending insist-once done-claim.
     session["_verify_streak"] = 0
+    session["_done_claim_step"] = None
 
     step = get_current_step_detail(session_id)
     logger.info("Session %s: jumped to step %d", session_id, step_number)
@@ -236,12 +241,12 @@ def get_context_summary(session_id: str) -> str | None:
     elif remaining_count == 1:
         remaining_str = (
             "One more step remains after this one. Do not describe or hint at it "
-            "before calling advance_step."
+            "before the system advances you to it."
         )
     else:
         remaining_str = (
             f"{remaining_count} more steps remain after this one. Do not describe "
-            "or hint at them before calling advance_step."
+            "or hint at them before the system advances you to them."
         )
 
     # Current step details
@@ -300,11 +305,47 @@ def _dispatch_advance_step(session_id: str, args: dict) -> dict:
     return advance_step(session_id, method=trigger)
 
 
+def _dispatch_check_step(session_id: str, args: dict) -> dict:
+    """Graceful-degrade handler for `check_step` reaching the server dispatcher.
+
+    In production the phone intercepts `check_step` before forwarding (the
+    oracle needs a camera frame, which /tool-call never carries) and answers
+    it via POST /verify mode=on_demand. This handler only runs when there is
+    no intercepting client: the playground REPL, test scripts, or an old iOS
+    build against a new token. With no frame to judge, fall back to the
+    learner's word — the same trust-on-failure behavior the real path uses
+    when the oracle is unavailable.
+    """
+    logger.warning(
+        "Session %s: check_step hit the server dispatcher — no client intercept",
+        session_id,
+    )
+    claim = (args or {}).get("claim") or "done"
+    if claim == "question":
+        return {
+            "status": "unverifiable",
+            "message": (
+                "No camera frame is available to check. Ask the learner to "
+                "describe what they see and judge from their answer."
+            ),
+        }
+    result = advance_step(session_id, method="verbal")
+    result.setdefault(
+        "note", "Advanced on the learner's word (visual check unavailable)."
+    )
+    return result
+
+
 # Tool-call dispatcher, keyed by (session_type, tool_name). Per-mode packages
 # register their own handlers via register_tool_handler() at import time;
 # the learner handlers below are the bootstrapped defaults.
+#
+# advance_step stays registered even though it is no longer in Live's
+# TOOL_DEFINITIONS: the iOS HUD swipe posts it directly to /tool-call, and
+# in-flight sessions on pre-check_step tokens still emit it.
 _TOOL_HANDLERS: dict[tuple[str, str], callable] = {
     ("learner", "advance_step"): _dispatch_advance_step,
+    ("learner", "check_step"): _dispatch_check_step,
     ("learner", "get_reference_clip"): lambda sid, args: get_reference_clip(sid),
     ("learner", "go_to_step"): lambda sid, args: go_to_step(sid, args.get("step_number", 0)),
 }

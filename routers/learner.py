@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from config import CLIPS_DIR
 from models.procedure import Procedure
@@ -157,10 +157,17 @@ async def tool_call(session_id: str, req: ToolCallRequest):
 
 
 @router.post("/session/{session_id}/verify")
-async def verify_current_step(session_id: str, frame: UploadFile = File(...)):
+async def verify_current_step(
+    session_id: str,
+    frame: UploadFile = File(...),
+    mode: str = Form("poll"),
+    claim: str | None = Form(None),
+):
     """Out-of-band visual verification of the current step.
 
-    The phone posts the learner's latest camera frame (~every few seconds).
+    Two modes share the endpoint (and the frame upload):
+
+    `mode="poll"` (default) — the unprompted ~4s Active-monitoring poll.
     The server runs the Flash oracle against the step's spatial end-state
     (grounded on the expert's 'done' frame) and its error states, applies the
     dwell + toggle gates, and — on a confirmed completion — advances the
@@ -168,16 +175,33 @@ async def verify_current_step(session_id: str, frame: UploadFile = File(...)):
     would. Gemini Live is never involved; the phone injects the outcome into
     the Live socket as an `[ADVANCE]` / `[CORRECTION]` turn.
 
-    Response `status`:
+    `mode="on_demand"` — the learner-initiated `check_step` tool. The phone
+    intercepts the Live tool call, attaches its latest frame, and sets
+    `claim="done"` (learner says they finished) or `claim="question"`
+    (learner asks if it's right). Learner-initiated, so it bypasses the
+    active_monitoring/auto_advance toggles, dwell, and the error dedup latch —
+    see `_verify_on_demand`.
+
+    Poll response `status`:
       - `skip`      — step is verbal-only (visual_verifiability=none) or the
                       session isn't actively auto-advancing. Phone does nothing.
       - `pending`   — polled, nothing confirmed yet (or oracle unavailable).
       - `error`     — a known error is visible; `error_text` is the correction.
       - `advanced` / `completed` — the step advanced; carries next-step fields.
+
+    On-demand adds: `not_confirmed` (+`reason`, optional `error_text`),
+    `unverifiable` (+`reason`), `check_failed` (+`reason`),
+    `already_completed`; `advanced`/`completed` carry `method`
+    ("visual"|"verbal") and an optional `note`.
     """
     session = get_session(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
+
+    if mode == "on_demand":
+        if claim not in ("done", "question"):
+            raise HTTPException(400, "claim must be 'done' or 'question' for on_demand mode")
+        return await _verify_on_demand(session_id, session, frame, claim)
 
     if session.get("status") == "completed" or not session.get("procedure"):
         return {"status": "skip"}
@@ -214,7 +238,10 @@ async def verify_current_step(session_id: str, frame: UploadFile = File(...)):
             reference_jpg = await asyncio.to_thread(done_path.read_bytes)
 
     polled_step = step["step_number"]
-    verdict = await verify_step(current_jpg, step, reference_jpg)
+    verdict = await verify_step(
+        current_jpg, step, reference_jpg,
+        glossary=session["procedure"].get("parts"),
+    )
     if verdict is None:
         return {"status": "pending"}
 
@@ -262,6 +289,143 @@ async def verify_current_step(session_id: str, frame: UploadFile = File(...)):
         session_id, verifiability,
     )
     return result
+
+
+async def _verify_on_demand(
+    session_id: str, session: dict, frame: UploadFile, claim: str
+) -> dict:
+    """Learner-initiated oracle check backing the Live `check_step` tool.
+
+    Differs from the poll path deliberately:
+      - Bypasses active_monitoring/auto_advance (the learner asked — works in
+        Passive mode too; those toggles gate only the unprompted poll).
+      - No dwell and no `_verify_streak` writes — one confident verdict decides.
+      - No error dedup skip — an explicit question deserves an explicit answer
+        (but a matched error still SETS `_last_error` so the next poll doesn't
+        immediately re-nag the mistake Live is about to voice).
+      - Trust-on-failure: on claim="done", an unavailable oracle or an
+        unverifiable step advances on the learner's word (method="verbal")
+        rather than blocking the session.
+      - Insist-once: the first oracle rejection of a done-claim is reported;
+        a second consecutive done-claim on the same step advances verbally.
+    """
+    if session.get("status") == "completed" or not session.get("procedure"):
+        return {"status": "already_completed"}
+
+    step = get_current_step_detail(session_id)
+    if not step:
+        return {"status": "already_completed"}
+
+    verifiability = step.get("visual_verifiability", "reliable")
+    errors = step.get("error_criteria") or []
+
+    def _advance_verbal(note: str) -> dict:
+        result = advance_step(session_id, method="verbal")
+        if result.get("status") in ("advanced", "completed"):
+            result["method"] = "verbal"
+            result["note"] = note
+        return result
+
+    # Steps with no single-frame visual end-state (counting/timing/torque):
+    # the learner's word is the only signal there is.
+    if verifiability == "none":
+        if claim == "done":
+            logger.info(
+                "Session %s: check_step done-claim on none-verifiability step — verbal advance",
+                session_id,
+            )
+            return _advance_verbal("This step has no visible end-state; advanced on the learner's word.")
+        return {
+            "status": "unverifiable",
+            "reason": "This step has no visible end-state to check from the camera.",
+        }
+
+    current_jpg = await frame.read()
+    reference_jpg: bytes | None = None
+    if current_jpg:
+        clip_path = CLIPS_DIR / session["procedure_id"] / f"step_{step['step_number']}.mp4"
+        if clip_path.exists():
+            done_path = await asyncio.to_thread(extract_done_frame, clip_path)
+            if done_path is not None:
+                reference_jpg = await asyncio.to_thread(done_path.read_bytes)
+
+    checked_step = step["step_number"]
+    verdict = None
+    if current_jpg:
+        verdict = await verify_step(
+            current_jpg, step, reference_jpg,
+            glossary=session["procedure"].get("parts"),
+        )
+
+    if verdict is None:
+        # Oracle unavailable (or no usable frame). Never block the learner.
+        logger.warning(
+            "Session %s: check_step oracle unavailable (claim=%s)", session_id, claim
+        )
+        if claim == "done":
+            return _advance_verbal("Visual check unavailable — advanced on the learner's word.")
+        return {
+            "status": "check_failed",
+            "reason": "Couldn't check the camera right now.",
+        }
+
+    # The oracle call is awaited — the step could have moved while in flight
+    # (poll advance, HUD swipe, go_to_step). Drop the stale verdict.
+    current = get_current_step_detail(session_id)
+    if not current or current["step_number"] != checked_step:
+        if session.get("status") == "completed":
+            return {"status": "already_completed"}
+        return {
+            "status": "not_confirmed",
+            "reason": "The step changed while checking — coach the current step.",
+        }
+
+    # A clearly visible known error trumps everything — the step isn't done.
+    if verdict.error_index is not None and 0 <= verdict.error_index < len(errors):
+        error_text = errors[verdict.error_index]
+        session["_last_error"] = error_text
+        logger.info(
+            "Session %s: check_step matched error %d (claim=%s)",
+            session_id, verdict.error_index, claim,
+        )
+        return {
+            "status": "not_confirmed",
+            "reason": verdict.reason or error_text,
+            "error_text": error_text,
+        }
+
+    if verdict.complete and verdict.confidence >= _ORACLE_CONFIDENCE_FLOOR:
+        result = advance_step(session_id, method="visual")
+        if result.get("status") in ("advanced", "completed"):
+            result["method"] = "visual"
+        logger.info(
+            "Session %s: check_step visually confirmed step %d (claim=%s, conf=%.2f)",
+            session_id, checked_step, claim, verdict.confidence,
+        )
+        return result
+
+    # Not complete (or not confident enough).
+    if claim == "done":
+        if session.get("_done_claim_step") == checked_step:
+            # Insist-once: the oracle already rejected a done-claim on this
+            # step. The learner is the final authority — advance on their word.
+            logger.info(
+                "Session %s: check_step insist-once override on step %d",
+                session_id, checked_step,
+            )
+            return _advance_verbal("The learner insisted after a failed visual check.")
+        session["_done_claim_step"] = checked_step
+
+    if verdict.reason:
+        reason = f"The step doesn't look finished yet: {verdict.reason}"
+    elif step.get("completion_criteria"):
+        reason = (
+            "The step doesn't look finished yet. What finished looks like: "
+            f"{step['completion_criteria']}"
+        )
+    else:
+        reason = "The step doesn't look finished yet from the camera."
+    return {"status": "not_confirmed", "reason": reason}
 
 
 @router.get("/session/{session_id}/state", response_model=SessionState)

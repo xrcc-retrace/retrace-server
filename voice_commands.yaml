@@ -127,17 +127,55 @@ commands:
       - "I'm done"
       - "move on"
       - "finished"
-    handler_type: server_tool
-    target: "advance_step"
+    handler_type: client_tool
+    target: "check_step"
     confirmation: none
     disambiguation: >
       Do NOT fire if Gemini is mid-way through reading back a warning or caution.
       Do NOT fire if the completion card is already showing (confirm_complete
-      handles that state).
+      handles that state). These are ASSERTIONS of completion — statements, not
+      questions. A question about whether the work is correct is check_my_work.
     notes: >
-      Visual auto-advance (auto_advance=True) bypasses this command — Gemini
-      calls advance_step when it sees completion_criteria met visually. This
-      is the verbal path that fires when auto_advance=False.
+      A spoken "done" now routes through check_step with claim="done" — the
+      visual oracle verifies before advancing (insist-once override: a second
+      consecutive done-claim on the same step advances on the learner's word).
+      Visual auto-advance (auto_advance=True) still runs out-of-band via the
+      /verify poll, independent of this command.
+
+  - id: check_my_work
+    display_name: "Check My Work"
+    mode: learner
+    family: navigation
+    intent: "Ask the coach to visually verify the current step's work without asserting completion."
+    utterances:
+      - "Is this right?"
+      - "Does this look right?"
+      - "Am I done?"
+      - "Did I do it correctly?"
+      - "Is this correct?"
+      - "Check my work"
+      - "Can you check this?"
+      - "Does that look OK?"
+      - "Is it in right?"
+      - "Have I got this right?"
+    prompt_utterances:
+      - "is this right?"
+      - "am I done?"
+      - "does this look right?"
+      - "check my work"
+    handler_type: client_tool
+    target: "check_step"
+    confirmation: none
+    disambiguation: >
+      QUESTIONS about the work route here (claim="question"); flat assertions
+      of being finished ("done", "next") are next_step (claim="done"). A
+      question about which PART is in hand ("is this the right piece?") is
+      neither — Gemini answers that itself from the parts glossary without a
+      tool call (VISUAL HONESTY rules).
+    notes: >
+      Backed by the same check_step tool as next_step; the claim argument
+      changes the failure behavior — a rejected question just coaches the gap,
+      while a rejected done-claim arms the insist-once override.
 
   - id: previous_step
     display_name: "Previous Step"
@@ -187,6 +225,7 @@ commands:
       - "Step 4"
       - "Go back to step 1"
       - "Start from step 3"
+      - "Start on step 4"
       - "I want to go to step 6"
       - "Can you take me to step 4"
       - "Move to step 2"
@@ -195,6 +234,7 @@ commands:
       - "go to step N"
       - "skip to step N"
       - "take me to step N"
+      - "start on step N"
       - "step N"
     handler_type: server_tool
     target: "go_to_step"
@@ -703,16 +743,18 @@ commands:
       - "got it"
       - "looks good"
     handler_type: server_tool
-    target: "advance_step"
+    target: "advance_step (server dispatcher only — not a Live tool; the card is informational)"
     confirmation: none
     disambiguation: >
       Only active when the completion card is displayed. "OK" during normal
       coaching should NOT trigger step advancement — that is next_step's
       responsibility.
     notes: >
-      The completion card confirms a visual detection event. The step has
-      already been marked complete by advance_step; the card is informational.
-      This command is the verbal acknowledgment of the card, not the trigger.
+      The completion card confirms a verification event. The step has already
+      been advanced server-side by the oracle (poll or check_step); the card
+      is informational. This command is the verbal acknowledgment of the card,
+      not the trigger. advance_step survives only as a server dispatcher
+      handler (HUD swipe / legacy tokens), not in Live's toolset.
 
   - id: go_to_saved_workflows
     display_name: "Go to Saved Workflows"

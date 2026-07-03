@@ -14,15 +14,21 @@ logger = logging.getLogger(__name__)
 # their invocation-example phrasing from voice_commands.yaml, so a designer
 # can edit the YAML and the prompt rebuilds on the next server start. The
 # comma-separated utterance lists below are rendered by vc.format_utterance_examples().
-def _advance_step_description() -> str:
-    examples = vc.format_utterance_examples("next_step")
+def _check_step_description() -> str:
+    done_examples = vc.format_utterance_examples("next_step")
+    question_examples = vc.format_utterance_examples("check_my_work")
     return (
-        "Call this when the learner TELLS you they've finished the current step "
-        f"({examples}). Always set `trigger` to 'verbal'. Do NOT try to advance "
-        "from what you see on camera — visual completion is detected for you "
-        "automatically and arrives as an [ADVANCE] message; your job is only the "
-        "spoken 'done'. Call it on every step the learner reports finishing, "
-        "including the very last one."
+        "Verify the learner's work on the current step with a high-resolution "
+        "camera check (a separate verifier, sharper than your own view). Call it "
+        "in BOTH of these moments:\n"
+        f"- claim='done' — the learner states they finished ({done_examples}).\n"
+        f"- claim='question' — the learner asks whether their work is right "
+        f"({question_examples}).\n"
+        "Say one short natural phrase first (\"let me take a look…\") — the check "
+        "takes a few seconds and your voice covers the wait. Never declare the "
+        "step complete or advance without calling this tool, and never judge "
+        "completion from your own camera view. Call it on every step the learner "
+        "reports finishing, including the very last one."
     )
 
 
@@ -47,22 +53,22 @@ def _go_to_step_description() -> str:
 
 TOOL_DEFINITIONS = [
     {
-        "name": "advance_step",
-        "description": _advance_step_description(),
+        "name": "check_step",
+        "description": _check_step_description(),
         "parameters": {
             "type": "object",
             "properties": {
-                "trigger": {
+                "claim": {
                     "type": "string",
-                    "enum": ["verbal", "visual"],
+                    "enum": ["done", "question"],
                     "description": (
-                        "Always 'verbal' — you call this tool only when the learner "
-                        "says they're done. Visual completion is detected out-of-band "
-                        "by the system, not by you, so you never pass 'visual'."
+                        "'done' when the learner asserts they finished the step; "
+                        "'question' when they ask whether their work is correct "
+                        "without asserting completion."
                     ),
                 },
             },
-            "required": ["trigger"],
+            "required": ["claim"],
         },
     },
     {
@@ -116,10 +122,10 @@ def build_system_prompt(
     """Build a Gemini Live system prompt for coaching a learner through a procedure.
 
     Only embeds the current step's details. Future steps are delivered
-    exclusively through advance_step tool responses, preventing the
-    model from skipping tool calls. On token refresh / session resumption,
-    pass the session's current step so a resumed socket doesn't reopen
-    anchored on step 1.
+    exclusively through check_step tool responses (and injected [ADVANCE]
+    turns), preventing the model from skipping tool calls. On token refresh /
+    session resumption, pass the session's current step so a resumed socket
+    doesn't reopen anchored on step 1.
     """
     steps = procedure["steps"] or []
     current_step = next(
@@ -178,9 +184,9 @@ When they seem stuck: offer ONE tip at a time, not the whole list. Or ask what t
 
 Acknowledging progress: short — usually 1-3 words ("nice", "got it", "yeah that's it"), optionally flowing into the next directive ("nice — now tighten it clockwise"). A full-sentence recognition is fine occasionally after a genuinely tough step, not after every action.
 
-Step completion (advance_step returned status="advanced"): give a brief warm congrats flowing into the next action drawn from the tool response. Do NOT summarize what they just did — they know, they just did it.
+Step completion (check_step returned status="advanced"): confirm they got it right first ("yes, that's it"), then flow into the next action drawn from the tool response. Do NOT summarize what they just did — they know, they just did it.
 
-Procedure completion (advance_step returned status="completed"): a slightly longer warm close — 1-3 sentences of real praise. This is the one moment where audio length matters more than the brevity rule.
+Procedure completion (check_step returned status="completed"): a slightly longer warm close — 1-3 sentences of real praise. This is the one moment where audio length matters more than the brevity rule.
 
 Mistake interjection: short and urgent, then the fix. "Hold on — you're turning it the wrong way, go counter-clockwise."
 
@@ -200,26 +206,36 @@ Mistake interjection: short and urgent, then the fix. "Hold on — you're turnin
     return prompt
 
 
+def _check_step_responses() -> str:
+    """How to speak from each check_step result — shared by both variants."""
+    return """The check_step response tells you what happened — speak from it:
+- status="advanced" or "completed": VERIFIED. First tell them they got it right in a short natural sentence ("yes — that's on right, nice work"), THEN flow into the next step from the response (or, on "completed", the warm close). Confirmation first, next step second, one turn. If the response carries a `note` (e.g. advanced on their word because the check was unavailable), don't mention the mechanics — just coach on.
+- status="not_confirmed": it does not look finished — `reason` names the visible gap or mistake. Relay it kindly and specifically, then let them fix it. If they then insist they ARE done, call check_step with claim="done" again — the learner has the final word and the system will advance on their second claim.
+- status="unverifiable": this step has no visible end-state to check. For a question, say you can't tell from the camera for this one and ask them to confirm in their own words. A done-claim advances automatically here — coach the next step from the response.
+- status="check_failed": the check couldn't run. Don't mention the failure mechanics; judge what you can from the conversation and ask them to describe what they see."""
+
+
 def _step_progression_auto() -> str:
-    next_examples = vc.format_utterance_examples("next_step")
     return f"""=== STEP PROGRESSION ===
 Steps advance two ways, and you handle only one of them:
-- When the learner SAYS they're done ({next_examples}), call advance_step with trigger="verbal".
-- When the system VISUALLY detects the step is complete, it sends you an [ADVANCE] message on its own — you do not watch for this or call the tool for it. Just coach from that message when it arrives (see EVENT SIGNALS).
+- When the learner says they're DONE or ASKS whether their work is right, call check_step (see the tool's description for which claim). A high-resolution verifier checks the camera; you never decide completion yourself.
+- When the system VISUALLY detects the step is complete on its own, it sends you an [ADVANCE] message — you do not watch for this or call any tool for it. Just coach from that message when it arrives (see EVENT SIGNALS).
 
-You only know the current step. Whether the next step arrives via an advance_step response (status="advanced") or an [ADVANCE] message, speak from what it gives you. Until then you have no information about future steps — never describe or hint at them.
+{_check_step_responses()}
+
+You only know the current step. Whether the next step arrives via a check_step response (status="advanced") or an [ADVANCE] message, speak from what it gives you. Until then you have no information about future steps — never describe or hint at them.
 
 Use get_reference_clip when the learner asks to see the expert's video.
 Use go_to_step when the learner asks to jump to a specific step number, or to re-read the current step (pass the current step number)."""
 
 
 def _step_progression_manual() -> str:
-    next_examples = vc.format_utterance_examples("next_step")
     return f"""=== STEP PROGRESSION ===
-Call advance_step when the learner says they're done ({next_examples}). Call it every time, including on the final step.
+When the learner says they're DONE or ASKS whether their work is right, call check_step (see the tool's description for which claim). Call it every time, including on the final step — a high-resolution verifier checks the camera; you never decide completion yourself.
 
+{_check_step_responses()}
 
-You only know the current step. When advance_step returns, the response gives you the next step's instructions (status="advanced") or a procedure-complete message (status="completed"). Speak from that response. Until then, you have no information about future steps — never describe or hint at them.
+You only know the current step. When check_step returns, the response gives you the next step's instructions (status="advanced") or a procedure-complete message (status="completed"). Speak from that response. Until then, you have no information about future steps — never describe or hint at them.
 
 Use get_reference_clip when the learner asks to see the expert's video.
 Use go_to_step when the learner asks to jump to a specific step number, or to re-read the current step (pass the current step number)."""
@@ -272,7 +288,13 @@ def _visual_honesty(has_parts: bool) -> str:
         else ""
     )
     return f"""=== VISUAL HONESTY ===
-The learner will sometimes hold something up and ask you to confirm it ("is this the right piece?", "is this attached?", "does this look right?"). These questions deserve real judgment, not agreement:
+The learner will sometimes hold something up and ask you to confirm it ("is this the right piece?", "is this attached?", "does this look right?"). These questions deserve real judgment, not agreement.
+
+Two kinds of question, two different paths:
+- "Is my WORK on this step right / am I done?" → that is check_step territory (see STEP PROGRESSION). Call the tool; don't rule from your own view.
+- "Is this the right PIECE / part / tool?" → that one is yours. Answer it yourself from the camera and the rules below — no tool call.
+
+For the part-identification questions you answer yourself:
 - Before answering, look at the current camera frame and decide from what you actually see — never from what the learner asserted or how confident they sounded.{glossary_line}
 - Get a usable view BEFORE you rule. If the part isn't centered, close, filling the frame, and held still, ask for that first ("hold it right up to the camera and keep it steady for a second") — never judge a piece that's far, angled, or moving. At the camera's frame rate a quick wave gives you nothing to go on.
 - Commit to what you can actually see: name the specific visible feature you're keying on ("the knurled black cylinder, threaded both ends — that's the nosepiece"), so your answer is anchored to the frame, not to the name they used.{verbal_line}
@@ -297,23 +319,32 @@ def _visual_monitoring(auto_advance: bool, active_monitoring: bool) -> str:
     upstream). This replaces the old `[check]` heartbeat, which asked Live to do
     the watching itself and hallucinated on empty scenes.
 
-    active_monitoring=False → no signals are sent; purely reactive.
-    active_monitoring=True, auto_advance=True  → both [ADVANCE] and [CORRECTION].
-    active_monitoring=True, auto_advance=False → [CORRECTION] only.
-    """
-    if not active_monitoring:
-        return """=== REACTIVE MODE ===
-You can see the learner's camera feed for context, but you are in REACTIVE mode. Respond only when the learner speaks to you. Do NOT proactively comment on what you see or send unprompted updates. Advance only when the learner tells you they're done — call advance_step with trigger="verbal". Otherwise stay silent and let them work."""
+    The [ADVANCE] bullet is unconditional: even with auto_advance off (no
+    unprompted poll advance), a verified check_step still lands its next-step
+    coaching as a deferred [ADVANCE] injection from the phone — after the
+    model finishes speaking its confirmation. [CORRECTION] stays gated on
+    active_monitoring (it only ever comes from the unprompted poll).
 
-    advance_bullet = ""
-    if auto_advance:
-        advance_bullet = (
-            '\n- `[ADVANCE] …` — the current step is done and the message names the '
-            'NEXT step. Give a brief, warm acknowledgement and flow straight into '
-            'coaching that next step from the details in the message. Do NOT call '
-            'advance_step yourself for this — the step has already advanced. Do NOT '
-            'recap what they just finished.'
-        )
+    active_monitoring=False → REACTIVE MODE; [ADVANCE] arrives only after the
+    learner's own check_step confirmations.
+    active_monitoring=True, auto_advance=True  → both [ADVANCE] and [CORRECTION].
+    active_monitoring=True, auto_advance=False → [ADVANCE] (check_step-initiated
+    only) and [CORRECTION].
+    """
+    advance_bullet = (
+        '\n- `[ADVANCE] …` — the current step is done and the message names the '
+        'NEXT step. Give a brief, warm acknowledgement and flow straight into '
+        'coaching that next step from the details in the message. Do NOT call '
+        'check_step for this — the step has already advanced. Do NOT '
+        'recap what they just finished.'
+    )
+
+    if not active_monitoring:
+        return f"""=== REACTIVE MODE ===
+You can see the learner's camera feed for context, but you are in REACTIVE mode. Respond only when the learner speaks to you. Do NOT proactively comment on what you see or send unprompted updates. Steps advance only through check_step — call it when the learner says they're done or asks if their work is right (see STEP PROGRESSION). Otherwise stay silent and let them work.
+
+One internal signal still reaches you: after a verified check_step, the system sends the next step in a short internal message tagged `[ADVANCE]`.{advance_bullet}
+Never read the bracket tag or its brackets out loud, and never treat the message as the learner speaking."""
 
     return f"""=== EVENT SIGNALS ===
 A separate system watches the learner's camera for you, so you never have to decide from the video whether a step is done or a mistake happened. When — and only when — it is confident, it injects a short internal message that begins with a bracketed tag. These are internal signals, NOT the learner speaking. Act on them immediately; they are already verified.{advance_bullet}
@@ -324,7 +355,7 @@ Hard rules:
 - Never treat these as the learner's words or answer them conversationally ("sure", "got it, checking").
 - If the learner starts speaking while you're relaying a correction, stop and listen — barge-in wins.
 
-Everything else (the learner's spoken questions, verbal step completions, advance_step responses, barge-in) behaves normally."""
+Everything else (the learner's spoken questions, check_step calls and responses, barge-in) behaves normally."""
 
 
 # TRANSITIONAL: _ERROR_CRITERIA_OVERRIDES is the legacy seed dict from before
