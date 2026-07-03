@@ -6,9 +6,10 @@ Keeps DB procedure rows + Gemini-extracted steps/timestamps intact. Only the per
 Usage:
     cd main-local-server-test
     source .venv/bin/activate
-    python reprocess_clips.py
+    python reprocess_clips.py [--procedure ID_PREFIX]
 """
 
+import argparse
 import asyncio
 import logging
 import shutil
@@ -88,7 +89,19 @@ def apply_update(procedure_id: str, failed_steps: list[int]) -> None:
 
 
 async def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--procedure",
+        help="Only reprocess procedures whose id starts with this prefix",
+    )
+    args = parser.parse_args()
+
     procs = load_procedures()
+    if args.procedure:
+        procs = [p for p in procs if p["id"].startswith(args.procedure)]
+        if not procs:
+            print(f"No completed procedure matches prefix {args.procedure!r}")
+            return 1
     print(f"Found {len(procs)} completed procedures to reprocess.\n")
 
     total_ok = 0

@@ -15,6 +15,10 @@ on:
         description: "Preview only (no writes)"
         type: boolean
         default: false
+      clips_only:
+        description: "Skip Gemini; just re-cut clips from stored timestamps (reprocess_clips.py)"
+        type: boolean
+        default: false
 
 jobs:
   reextract:
@@ -28,12 +32,13 @@ jobs:
         env:
           INPUT_PROCEDURE: ${{ inputs.procedure }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_CLIPS_ONLY: ${{ inputs.clips_only }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           command_timeout: 60m
-          envs: INPUT_PROCEDURE,INPUT_DRY_RUN
+          envs: INPUT_PROCEDURE,INPUT_DRY_RUN,INPUT_CLIPS_ONLY
           script: |
             set -euo pipefail
             cd ~/main-local-server-test
@@ -51,6 +56,13 @@ jobs:
                 exit 1
               fi
               PROC_ARG="--procedure $INPUT_PROCEDURE"
+            fi
+
+            if [ "$INPUT_CLIPS_ONLY" = "true" ]; then
+              echo "::group::reprocess clips $PROC_ARG"
+              python reprocess_clips.py $PROC_ARG
+              echo "::endgroup::"
+              exit 0
             fi
 
             if [ "$MODE" = "--apply" ]; then
