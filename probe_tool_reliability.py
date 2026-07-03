@@ -1,8 +1,16 @@
 """Measure advance_step tool-call reliability on native-audio 12-2025.
 
+STALE PREMISE (2026-07-02): advance_step was removed from Live's toolset —
+step advancement is oracle-owned via the client-intercepted `check_step`
+tool (claim="done"|"question"). This probe still runs (the token path and
+prompt builder are alive) but it measures a tool the production prompt no
+longer declares. Follow-up before trusting its numbers: retarget HIT
+detection to `check_step` and score claim-correctness (done-phrases →
+claim="done", question-phrases → claim="question").
+
 Exercises the EXACT production path (ephemeral token minted via
 services.ephemeral_token + WebSocket connect via Constrained endpoint) that
-iOS uses. Each trial sends a short user turn that should trigger advance_step,
+iOS uses. Each trial sends a short user turn that should trigger the tool,
 waits up to TIMEOUT, and records HIT (tool-call fired) or MISS
 (model replied verbally without dispatching the tool).
 

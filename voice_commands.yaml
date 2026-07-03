@@ -235,7 +235,6 @@ commands:
       - "skip to step N"
       - "take me to step N"
       - "start on step N"
-      - "step N"
     handler_type: server_tool
     target: "go_to_step"
     confirmation: soft

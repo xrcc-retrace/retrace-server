@@ -195,11 +195,16 @@ def _compact(args: dict) -> str:
 def _summarize_tool_result(name: str, result: dict) -> str:
     if "error" in result:
         return c(f"error={result['error']}", _RED)
-    if name == "advance_step":
+    if name in ("advance_step", "check_step"):
+        # check_step in the playground hits the server degrade handler (no
+        # camera frame in-process): done-claims advance verbally, questions
+        # come back unverifiable.
         if result.get("status") == "completed":
             return result.get("message", "completed")
         if result.get("status") == "advanced":
             return f'step {result["new_step"]}: "{result["step_title"]}"'
+        if result.get("status") == "unverifiable":
+            return "unverifiable (no camera in playground)"
     if name == "go_to_step":
         return f'step {result.get("current_step")}: "{result.get("step_title")}"'
     if name == "get_reference_clip":

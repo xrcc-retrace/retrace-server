@@ -141,9 +141,10 @@ async def run_live_session(session_data: dict):
             # Simulated learner messages
             learner_messages = [
                 ("Let's start!", "Initial greeting — expect model to read Step 1"),
-                ("done", "Step completion — expect advance_step tool call"),
+                ("done", "Step completion — expect check_step(claim=done) tool call"),
                 ("show me the reference", "Reference request — expect get_reference_clip tool call"),
-                ("done", "Step completion — expect advance_step tool call"),
+                ("is this right?", "Correctness question — expect check_step(claim=question)"),
+                ("done", "Step completion — expect check_step(claim=done) tool call"),
                 ("go back to step 1", "Navigation — expect go_to_step tool call"),
                 ("done", "Advance again from step 1"),
                 ("done", "Advance to step 3"),
