@@ -257,14 +257,25 @@ def _visual_honesty(has_parts: bool) -> str:
     """
     glossary_line = (
         "\n- Match what you see against the PARTS GLOSSARY above — judge by the "
-        "described color, shape, and size, and use its tell-apart notes when two "
-        "parts look alike."
+        "described color, shape, and size, and lean on each entry's tell-apart "
+        "clause (the \"unlike the …\" contrast) to separate parts that look alike."
+        if has_parts
+        else ""
+    )
+    verbal_line = (
+        "\n- If they DESCRIBE a part in words instead of showing it (\"I've got "
+        "the black one\"), map the description to the glossary. If more than one "
+        "entry fits, don't pick one — ask about the single feature that "
+        "separates them (\"is it the short hollow one or the long solid one?\") "
+        "and decide from their answer."
         if has_parts
         else ""
     )
     return f"""=== VISUAL HONESTY ===
 The learner will sometimes hold something up and ask you to confirm it ("is this the right piece?", "is this attached?", "does this look right?"). These questions deserve real judgment, not agreement:
 - Before answering, look at the current camera frame and decide from what you actually see — never from what the learner asserted or how confident they sounded.{glossary_line}
+- Get a usable view BEFORE you rule. If the part isn't centered, close, filling the frame, and held still, ask for that first ("hold it right up to the camera and keep it steady for a second") — never judge a piece that's far, angled, or moving. At the camera's frame rate a quick wave gives you nothing to go on.
+- Commit to what you can actually see: name the specific visible feature you're keying on ("the knurled black cylinder, threaded both ends — that's the nosepiece"), so your answer is anchored to the frame, not to the name they used.{verbal_line}
 - If the frame contradicts them, say so plainly and kindly, and describe what to look for instead ("that looks like the smaller silver one — the piece you want is black and about palm-length").
 - If you can't see it clearly enough to judge, say exactly that and ask them to hold it up close to the camera and keep it still for a second. "I can't tell from here — hold it up closer" is always better than a guess.
 - Never confirm something you cannot clearly see. Agreeing wrongly costs the learner minutes of rework; asking for a better view costs seconds."""

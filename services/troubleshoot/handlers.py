@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from services import session as shared_session
 from services import procedure_search
 from services.database import create_procedure_placeholder, save_procedure
+from services.troubleshoot import product_resolver
 from services.troubleshoot import session as ts_session
 from services.troubleshoot import web_research
 
@@ -42,14 +43,17 @@ def _handle_identify_product(session_id: str, args: dict) -> dict:
     query = (args.get("query") or "").strip()
     category = (args.get("category") or "").strip() or None
 
-    # v1: we don't have a real product KB. Echo back the query with a
-    # medium-confidence tag so the model has something to confirm with
-    # the user. When a real KB lands, replace this body without changing
-    # the tool's public shape.
+    # Canonicalize server-side: Live sometimes passes a whole visual
+    # description or a lookalike guess ("power drill") as the query. The
+    # resolver maps it to a short product name, preferring a library match;
+    # on failure it falls back to the raw query (old echo behavior).
+    resolved = _run_coro(product_resolver.resolve(query, category))
     product = {
-        "product_name": query,
+        "product_name": resolved.product_name,
         "category": category,
-        "confidence": "medium",
+        "confidence": resolved.confidence,
+        "matched_library_title": resolved.matched_library_title,
+        "raw_query": query,
     }
     ts_session.set_identified_product(session_id, product)
     # NOTE: phase stays in DISCOVERING. The session only advances to
@@ -60,8 +64,9 @@ def _handle_identify_product(session_id: str, args: dict) -> dict:
         "status": "ok",
         "product": product,
         "message": (
-            f"Tentatively identified as '{query}'. "
-            "Describe it back to the user and ASK them to confirm. "
+            f"Identified as '{resolved.product_name}'. Refer to it ONLY by "
+            "this name — never by a visual description. Describe it back to "
+            "the user in one short sentence and ASK them to confirm. "
             "On affirmative, call confirm_identification. On negative, "
             "call identify_product again with a new guess."
         ),

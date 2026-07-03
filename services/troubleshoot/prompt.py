@@ -29,6 +29,20 @@ _EQUIPMENT_ID_HINTS = [
         "power drill but the tool has two long squeeze handles, it is this "
         "rivet nut tool, NOT a drill."
     ),
+    (
+        "Snap Circuits (educational electronics kit). Core signature — even "
+        "in a partial view of just a few pieces: bright-colored flat plastic "
+        "parts, many shaped like pills or capsules, with arrows and "
+        "electronic symbols (resistor zigzags, capacitors, switches) printed "
+        "on top, connected to each other by blue plastic connector pieces "
+        "with shiny metal snap studs like clothing snaps. You may also see "
+        "numbers printed on the blue connectors, clear battery-holder blocks "
+        "with AA batteries, or a red motor piece — but none of these are "
+        "required; a few bright pill-shaped printed parts joined by blue "
+        "connectors is enough. There is no green PCB anywhere. If you see "
+        "that, it is a Snap Circuits kit, NOT a generic circuit board, "
+        "prototype PCB, or toy building-block set."
+    ),
 ]
 
 
@@ -40,6 +54,9 @@ def _build_equipment_hints_block() -> str:
         " Some equipment is easy to misread from the camera — apply these "
         "identification notes when what you see matches: "
         + " ".join(_EQUIPMENT_ID_HINTS)
+        + " These notes are for recognition only — never read them aloud. "
+        "When one matches, call identify_product with the product's SHORT "
+        "NAME (e.g. 'rivet nut tool'), never with the description."
     )
 
 
@@ -80,8 +97,10 @@ def _build_known_products_block() -> str:
         "Before identifying a product — from the camera or from the user's "
         "description — check whether it matches one of these. When the "
         "visual evidence is compatible with a library product, prefer that "
-        "identification over a generic lookalike guess, and pass the "
-        "library product's name to identify_product.\n"
+        "identification over a generic lookalike guess.\n"
+        "When calling identify_product, pass the SHORT PRODUCT NAME only "
+        "(2-6 words, e.g. 'nut rivet tool'). NEVER pass a description of "
+        "what the object looks like or what the user is doing.\n"
     )
 
 
@@ -105,10 +124,11 @@ DIAGNOSTIC_TOOL_DEFINITIONS = [
                 "query": {
                     "type": "string",
                     "description": (
-                        "Free-text product description, model number, or brand + "
-                        "category. Examples: 'Levoit LV600HH humidifier', "
-                        "'Instant Pot Duo showing C6 error', 'MacBook Pro laptop "
-                        "won't turn on'."
+                        "Short product name or model, 2-6 words. Examples: "
+                        "'Levoit LV600HH humidifier', 'Instant Pot Duo', "
+                        "'rivet nut tool'. MUST NOT be a sentence describing "
+                        "the object's appearance or what the user is doing "
+                        "with it."
                     ),
                 },
                 "category": {
@@ -306,7 +326,7 @@ After every 2-3 exchanges, give the user a one-sentence recap of what's been est
 
 {known_products_block}
 === VISUAL CONTEXT ===
-You can see the user's phone camera feed. Identify the device in the central focus of the frame from what you see, and call `identify_product` from that — don't wait for the user to name a brand or model. If text on the device is clearly legible, use it; if not, trust your recognition of the object itself. Check the KNOWN PRODUCTS list first: when what you see is compatible with a library product, identify it as that product rather than a generic lookalike. Confirm or contradict the user's described symptoms when they're visibly observable. Don't narrate the scene, don't ask them to reframe the camera, don't comment on what they're holding unless it's directly diagnostic.{equipment_hints}
+You can see the user's phone camera feed. Identify the device in the central focus of the frame from what you see, and call `identify_product` with its SHORT product name (2-6 words) — never a sentence describing its appearance or what the user is doing. Don't wait for the user to name a brand or model. If text on the device is clearly legible, use it; if not, trust your recognition of the object itself. Check the KNOWN PRODUCTS list first: when what you see is compatible with a library product, identify it as that product rather than a generic lookalike. Confirm or contradict the user's described symptoms when they're visibly observable. Don't narrate the scene, don't ask them to reframe the camera, don't comment on what they're holding unless it's directly diagnostic.{equipment_hints}
 
 === ESCALATION ===
 If 5 exchanges pass without a clear product identification, stop asking and call identify_product with whatever you have. The tool response will tell you how to proceed.

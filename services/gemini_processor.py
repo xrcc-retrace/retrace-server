@@ -78,7 +78,8 @@ Output at most three entries per step — fewer is fine, zero is fine when nothi
 Separately from the steps, build the procedure-level `parts` list: every DISTINCT physical part, component, or tool the expert handles anywhere in the video. During the live coaching session the learner will hold parts up to the camera and ask "is this the right piece?" — the coach answers from these descriptions, so write each `appearance` for VISUAL DISAMBIGUATION on a live camera feed:
 - Name the color, material/finish (matte, glossy, knurled, threaded), overall shape, and approximate size relative to a hand or the main tool.
 - Lead with the single most distinctive feature — the thing that separates this part from everything else on the workbench.
-- When the kit contains two parts that look alike (e.g. mandrels or nose pieces of different sizes), explicitly state how to tell them apart in BOTH entries.
+- End EVERY entry's `appearance` with an explicit contrast against the part in THIS kit it is most likely to be confused with on camera — name what visibly separates them (length, solid vs hollow, threaded vs smooth, flanged vs plain, matte vs shiny, color). E.g. "unlike the rivet nut, the mandrel is longer, solid, and threaded on only one end." The learner sees these two parts as similar; your job is to give the coach the one visible cue that tells them apart.
+- If a part resembles nothing else in the kit, instead close with the single feature that makes it unmistakable.
 - One entry per part — no duplicates across steps; describe the part itself, not what is done with it.
 
 Output JSON matching the GeminiVideoProcedureOutput schema. Field-level shape requirements (title format, description length, display_summary brevity, tips/warnings, completion_criteria observability) live in the response schema's field descriptions — follow those."""

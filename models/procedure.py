@@ -320,10 +320,12 @@ class GeminiVideoProcedurePart(BaseModel):
             "1-2 sentences of VISUAL identification written for telling "
             "parts apart on a live camera: color, material/finish, shape, "
             "approximate size relative to a hand or the main tool, and the "
-            "single most distinctive feature. If the kit contains a "
-            "similar-looking part it could be confused with, end with how "
-            'to tell them apart (e.g. "unlike the smaller silver mandrel, '
-            'this one is matte black and nearly palm-length").'
+            "single most distinctive feature. ALWAYS end with an explicit "
+            "contrast against the part in this kit it's most likely to be "
+            'confused with (e.g. "unlike the smaller silver mandrel, this '
+            'one is matte black and nearly palm-length"); if nothing in the '
+            "kit looks similar, end with the one feature that makes it "
+            "unmistakable."
         ),
     )
 
