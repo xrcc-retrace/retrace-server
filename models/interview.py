@@ -205,11 +205,13 @@ class InterviewLog(BaseModel):
     briefing: str = ""
     # [[t0, t1], ...] in video seconds during which the AI was speaking.
     # Produced on the phone from the playback clock + writer timeline origin.
-    ai_speech_windows: list[list[float]] = []
-    qa: list[QAEntry] = []
-    facts: list[Fact] = []
+    # Bounded: a multi-hour recording with a question a minute is <500; the
+    # cap also bounds the ffmpeg `-af` expression built from these.
+    ai_speech_windows: list[list[float]] = Field(default_factory=list, max_length=2_000)
+    qa: list[QAEntry] = Field(default_factory=list, max_length=500)
+    facts: list[Fact] = Field(default_factory=list, max_length=1_000)
     # Planner-transcribed narration, in order: {t, text}.
-    transcript: list[dict] = []
+    transcript: list[dict] = Field(default_factory=list, max_length=10_000)
     # Free-form client diagnostics (dropped ticks, reconnects…). Never read
     # by extraction; useful when a demo recording looks wrong.
     diagnostics: dict = Field(default_factory=dict)

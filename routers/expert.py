@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/expert", tags=["expert"])
 
+# The interview log is small structured JSON (tens of KB for a long session);
+# anything near this is a bug or abuse, not a bigger interview.
+MAX_INTERVIEW_LOG_BYTES = 2 * 1024 * 1024
+
 
 @router.post("/upload", status_code=202)
 async def upload_expert_video(
@@ -46,7 +50,9 @@ async def upload_expert_video(
 
     interview_log = None
     if interview is not None:
-        raw = await interview.read()
+        raw = await interview.read(MAX_INTERVIEW_LOG_BYTES + 1)
+        if len(raw) > MAX_INTERVIEW_LOG_BYTES:
+            raise HTTPException(413, "Interview log too large")
         if raw.strip():
             try:
                 interview_log = interview_store.parse_upload(raw)

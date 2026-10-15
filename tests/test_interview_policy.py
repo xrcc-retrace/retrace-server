@@ -183,6 +183,15 @@ class Ducking(unittest.TestCase):
         # (8,12) → clamped to (0,2); (41,44.2) → outside (10..30) → dropped
         self.assertEqual(f, f"volume=enable='between(t,0.000,2.000)':volume={DUCK_GAIN}")
 
+    def test_term_cap_bounds_argv(self):
+        from services.clip_extractor import MAX_DUCK_TERMS
+        f = duck_audio_filter([(float(i), float(i) + 0.5) for i in range(MAX_DUCK_TERMS * 2)])
+        self.assertEqual(f.count("between("), MAX_DUCK_TERMS)
+
+    def test_log_list_caps(self):
+        with self.assertRaises(ValueError):
+            parse_upload(('{"version":1,"ai_speech_windows":' + str([[0, 1]] * 2_001) + '}').encode())
+
     def test_multiple_windows_are_ored(self):
         f = duck_audio_filter([(1.0, 2.0), (3.0, 4.0)])
         self.assertIn("between(t,1.000,2.000)+between(t,3.000,4.000)", f)

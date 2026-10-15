@@ -58,6 +58,11 @@ router = APIRouter(prefix="/api/expert/interview", tags=["expert-interview"])
 # (status=planner_unavailable); it resets on the next success.
 _PLANNER_BACKOFF_AFTER = 3
 
+# Per-tick payload caps. A 720x1280 JPEG at q=0.85 is ~150-300 KB; a 6 s
+# 16 kHz PCM16 chunk is ~190 KB. These are generous ceilings, not budgets.
+_MAX_FRAME_BYTES = 4 * 1024 * 1024
+_MAX_AUDIO_BYTES = 4 * 1024 * 1024
+
 
 def _require(session_id: str) -> dict:
     s = iv_session.get(session_id)
@@ -162,8 +167,12 @@ async def observe(
     if s["_observe_inflight"]:
         return ObserveResponse(status="skipped", **_counts())
 
-    frame_bytes = await frame.read() if frame is not None else None
-    audio_bytes = await audio.read() if audio is not None else None
+    frame_bytes = await frame.read(_MAX_FRAME_BYTES + 1) if frame is not None else None
+    audio_bytes = await audio.read(_MAX_AUDIO_BYTES + 1) if audio is not None else None
+    if frame_bytes is not None and len(frame_bytes) > _MAX_FRAME_BYTES:
+        raise HTTPException(413, "frame too large")
+    if audio_bytes is not None and len(audio_bytes) > _MAX_AUDIO_BYTES:
+        raise HTTPException(413, "audio too large")
     if not frame_bytes:
         frame_bytes = None
     if not audio_bytes:

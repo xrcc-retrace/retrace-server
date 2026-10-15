@@ -23,6 +23,12 @@ LENS_ENCODE_VERSION = 2
 # answer, and at 0.08 (~-22 dB) the question is inaudible under narration.
 DUCK_GAIN = 0.08
 
+# Upper bound on `between()` terms in one `-af` expression. InterviewLog already
+# caps the window list; this keeps the ffmpeg argv bounded even if a caller
+# bypasses the model. Windows past the cap are dropped (audible AI voice in a
+# pathological clip beats a failed extraction).
+MAX_DUCK_TERMS = 256
+
 
 def duck_audio_filter(
     windows: list[tuple[float, float]] | None,
@@ -46,6 +52,8 @@ def duck_audio_filter(
             if b2 <= a2:
                 continue
         terms.append(f"between(t,{a2:.3f},{b2:.3f})")
+        if len(terms) >= MAX_DUCK_TERMS:
+            break
     if not terms:
         return None
     enable = "+".join(terms) if len(terms) > 1 else terms[0]
