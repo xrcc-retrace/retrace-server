@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from config import CLIPS_DIR, FFMPEG_PATH
 from models.procedure import ProcedurePart
+from services.expert_interview import store as interview_store
 from services.clip_extractor import (
     extract_done_frame,
     lens_variant_path,
@@ -87,9 +88,10 @@ async def list_procedures_endpoint():
 
 @router.delete("/procedures/{procedure_id}")
 async def delete_procedure_endpoint(procedure_id: str):
-    """Delete a procedure and its steps."""
+    """Delete a procedure and its steps (and its interview log, if any)."""
     if not delete_procedure(procedure_id):
         raise HTTPException(404, "Procedure not found")
+    interview_store.delete_log(procedure_id)
     return {"deleted": True}
 
 

@@ -20,6 +20,8 @@ data/clips/
 data/manuals/
 data/manual_images/
 data/icons/
+# Phone-uploaded expert-interview logs (services/expert_interview/store.py).
+data/interviews/
 
 # Per-box lens-encode marker (services/lens_variants.py) — records which
 # LENS_ENCODE_VERSION the box's _lens.mp4 variants were generated at. Each

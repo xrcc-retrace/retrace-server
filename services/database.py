@@ -79,6 +79,9 @@ def init_db():
         # they compare stale against any real version and get re-extracted on
         # the next boot. save_procedure() stamps the current version on write.
         ("extraction_version", "TEXT NOT NULL DEFAULT ''"),
+        # 1 when the upload carried an expert-interview log
+        # (data/interviews/{id}.json). The log itself stays on disk, like clips.
+        ("has_interview", "INTEGER NOT NULL DEFAULT 0"),
     ]:
         try:
             conn.execute(f"ALTER TABLE procedures ADD COLUMN {col} {definition}")
@@ -255,6 +258,7 @@ def get_procedure(procedure_id: str) -> dict | None:
         proc["sources"] = json.loads(proc.get("sources") or "[]")
         # Same for the parts glossary (legacy rows / manual/web procedures).
         proc["parts"] = json.loads(proc.get("parts") or "[]")
+        proc["has_interview"] = bool(proc.get("has_interview"))
         step_rows = conn.execute(
             "SELECT * FROM steps WHERE procedure_id = ? ORDER BY step_number",
             (procedure_id,),
@@ -287,7 +291,7 @@ def list_procedures() -> list[dict]:
             SELECT p.id, p.title, p.description, p.total_duration, p.created_at,
                    p.status, p.error_message, p.source_type,
                    p.icon_symbol, p.icon_emoji, p.category, p.sources,
-                   p.reference_image_url,
+                   p.reference_image_url, p.has_interview,
                    COUNT(s.id) as step_count
             FROM procedures p
             LEFT JOIN steps s ON s.procedure_id = p.id
@@ -299,8 +303,21 @@ def list_procedures() -> list[dict]:
         for r in rows:
             d = dict(r)
             d["sources"] = json.loads(d.get("sources") or "[]")
+            d["has_interview"] = bool(d.get("has_interview"))
             result.append(d)
         return result
+    finally:
+        conn.close()
+
+
+def set_procedure_has_interview(procedure_id: str, has_interview: bool) -> None:
+    conn = _get_conn()
+    try:
+        conn.execute(
+            "UPDATE procedures SET has_interview = ? WHERE id = ?",
+            (1 if has_interview else 0, procedure_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 

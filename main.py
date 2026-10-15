@@ -15,7 +15,16 @@ from zeroconf.asyncio import AsyncZeroconf
 
 from config import UPLOAD_DIR, REFERENCE_IMAGES_DIR
 from services.clip_extractor import transcode_lens_variant, upload_lens_variant_path
-from routers import ask_ai, expert, expert_manuals, icons, learner, procedures, troubleshoot
+from routers import (
+    ask_ai,
+    expert,
+    expert_interview,
+    expert_manuals,
+    icons,
+    learner,
+    procedures,
+    troubleshoot,
+)
 from services.database import init_db
 from services.fixtures import schedule_fixtures_load
 from services.lens_variants import schedule_lens_refresh
@@ -178,6 +187,7 @@ async def add_cache_control(request, call_next):
 
 
 app.include_router(expert.router)
+app.include_router(expert_interview.router)
 app.include_router(expert_manuals.router)
 app.include_router(icons.router)
 app.include_router(learner.router)

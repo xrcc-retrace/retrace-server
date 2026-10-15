@@ -7,7 +7,9 @@ from google.genai import types
 from google.genai.errors import ServerError
 
 from config import GEMINI_MODEL
+from models.interview import InterviewLog
 from models.procedure import GeminiVideoProcedureOutput
+from services.expert_interview.notes import format_interview_notes
 from services.metadata_picker import pick_metadata
 
 FALLBACK_MODEL = "gemini-2.5-flash"
@@ -105,8 +107,24 @@ def _get_client(api_key: str) -> genai.Client:
     return _client
 
 
-async def process_expert_video(video_path: str, api_key: str) -> dict[str, Any]:
+def build_procedure_prompt(interview: InterviewLog | None = None) -> str:
+    """PROCEDURE_PROMPT, plus the EXPERT INTERVIEW NOTES section when the
+    upload came with an interview log. Pure; byte-identical to the constant
+    when `interview` is None (so no extraction-version bump was needed)."""
+    return PROCEDURE_PROMPT + format_interview_notes(interview)
+
+
+async def process_expert_video(
+    video_path: str,
+    api_key: str,
+    *,
+    interview: InterviewLog | None = None,
+) -> dict[str, Any]:
     """Upload video to Gemini and extract a structured procedure.
+
+    `interview` (keyword-only; existing positional callers are unaffected) is
+    the expert-interview log uploaded with the video — its facts are folded
+    into the extraction prompt so stated specs/tips land in the steps.
 
     Returns a dict carrying the procedure's top-level fields plus the
     full step list. icon_symbol / icon_emoji / category are populated
@@ -156,9 +174,14 @@ async def process_expert_video(video_path: str, api_key: str) -> dict[str, Any]:
                     file_uri=video_file.uri,
                     mime_type=video_file.mime_type,
                 ),
-                types.Part.from_text(text=PROCEDURE_PROMPT),
+                types.Part.from_text(text=build_procedure_prompt(interview)),
             ])
         ]
+        if interview is not None:
+            logger.info(
+                "Extraction prompt carries interview notes: %d facts, %d qa, %d speech windows",
+                len(interview.facts), len(interview.qa), len(interview.ai_speech_windows),
+            )
 
         def _generate(model: str, timeout_ms: int):
             return client.models.generate_content(

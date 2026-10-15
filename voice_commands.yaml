@@ -949,3 +949,108 @@ commands:
       by family. Gemini also reads a short summary aloud. Primary discoverability
       mechanism — commands are not labeled on the HUD, so this is the user's
       only self-serve reference.
+
+  # ---------------------------------------------------------------------------
+  # Expert interviewer (mode: expert_interview)
+  # ---------------------------------------------------------------------------
+  # The interviewer's mic is only open inside an answer window (right after it
+  # asks something), so these are the expert's replies TO a question, not
+  # free-floating commands. Consumed by services/expert_interview/prompt.py.
+
+  - id: interview_later
+    display_name: "Ask Me Later"
+    mode: expert_interview
+    family: interview
+    intent: "Defer the question just asked to the post-recording debrief."
+    utterances:
+      - "Later"
+      - "Ask me later"
+      - "Not now"
+      - "After"
+      - "At the end"
+      - "Hold that"
+    prompt_utterances:
+      - "later"
+      - "ask me later"
+      - "not now"
+      - "at the end"
+    handler_type: client_tool
+    target: "InterviewCoordinator.deferPending"
+    confirmation: none
+    disambiguation: ""
+    notes: >
+      The phone closes the answer window and reports outcome=deferred; the
+      gap stays eligible for the debrief. Live says "Sure." and nothing else.
+
+  - id: interview_skip
+    display_name: "Skip Question"
+    mode: expert_interview
+    family: interview
+    intent: "Drop the question just asked; do not raise it again."
+    utterances:
+      - "Skip"
+      - "Skip that"
+      - "Doesn't matter"
+      - "Never mind"
+      - "Not relevant"
+    prompt_utterances:
+      - "skip"
+      - "skip that"
+      - "never mind"
+      - "doesn't matter"
+    handler_type: client_tool
+    target: "InterviewCoordinator.skipPending"
+    confirmation: none
+    disambiguation: ""
+    notes: >
+      outcome=skipped → gap status dropped. Never re-asked, not in the debrief.
+
+  - id: interview_quiet
+    display_name: "Hold Questions"
+    mode: expert_interview
+    family: interview
+    intent: "Turn off live questions for the rest of the recording (debrief still runs)."
+    utterances:
+      - "Stop asking"
+      - "No more questions"
+      - "Hold your questions"
+      - "Quiet please"
+      - "Let me focus"
+      - "Save it for the end"
+    prompt_utterances:
+      - "stop asking"
+      - "no more questions"
+      - "hold your questions"
+      - "save it for the end"
+    handler_type: hybrid
+    target: "POST /api/expert/interview/{id}/answer (quiet_mode)"
+    confirmation: none
+    disambiguation: ""
+    notes: >
+      Server flips quiet_mode; the planner keeps listening and logging gaps
+      but never proposes a live ask again this session.
+
+  - id: interview_done
+    display_name: "Done"
+    mode: expert_interview
+    family: interview
+    intent: "End the post-recording debrief early."
+    utterances:
+      - "Done"
+      - "That's all"
+      - "That's it"
+      - "I'm done"
+      - "We're good"
+      - "Finish"
+    prompt_utterances:
+      - "done"
+      - "that's all"
+      - "that's it"
+      - "we're good"
+    handler_type: client_tool
+    target: "InterviewCoordinator.endDebrief"
+    confirmation: none
+    disambiguation: ""
+    notes: >
+      Remaining debrief questions are left unanswered; the phone proceeds to
+      finalize + upload.

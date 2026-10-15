@@ -116,6 +116,9 @@ class Procedure(BaseModel):
     # Optional reference image (e.g. a diagram) shown on the learner's phone
     # for this procedure. Served from /api/reference_images/. None when unset.
     reference_image_url: str | None = None
+    # True when the expert recorded with the interviewer on and the upload
+    # carried an interview log (data/interviews/{id}.json).
+    has_interview: bool = False
 
 
 class StepBoundingBox(BaseModel):

@@ -126,7 +126,7 @@ def main() -> int:
         )
 
     # Spot-check that each mode has a reasonable command set.
-    for mode in ("learner", "troubleshoot"):
+    for mode in ("learner", "troubleshoot", "expert_interview"):
         n = len(vc.commands_for_mode(mode))
         print(f"{mode} mode: {n} commands available")
 
