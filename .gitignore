@@ -37,3 +37,4 @@ data/lens_encode_version
 evals/fixtures/*
 !evals/fixtures/staged/
 evals/reports/
+.claude/worktrees/
