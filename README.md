@@ -240,7 +240,7 @@ The `probe_*.py` scripts are the record of what the Gemini API accepted on a giv
 
 ### Deployment
 
-Production ran on an AWS Lightsail box (Caddy + uvicorn under systemd) with `.github/workflows/deploy.yml` pulling and restarting on push to `main`. The host has since been shut down; the workflow is kept for reference and should stay disabled on this repo.
+Production ran on an AWS Lightsail box (Caddy + uvicorn under systemd) with `.github/workflows/deploy.yml` pulling and restarting on push to `main`. The host has since been decommissioned and the deploy + SSH-bootstrap workflows were removed (see git history); `reextract.yml` remains as a dispatch-only reference.
 
 ---
 
