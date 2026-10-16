@@ -132,7 +132,7 @@ iOS app <=== direct Gemini Live WebSocket ===> Gemini
 
 ### Expert interviewer flow
 
-A Gemini Live session that runs *alongside* expert recording and asks the questions a learner would have needed (socket size, why, how you know it's tight). Full architecture + edge cases: `docs/expert-interviewer-design.md` at the repo root (one level above this package).
+A Gemini Live session that runs *alongside* expert recording and asks the questions a learner would have needed (socket size, why, how you know it's tight). Full architecture + edge cases: `docs/expert-interviewer-design.md`.
 
 ```
 iOS app --[POST voice, transport, task_hint]--> /api/expert/interview/session/start
