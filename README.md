@@ -140,7 +140,7 @@ Gemini Live's "2-minute audio+video limit" is a context-fill limit, not a timer.
 
 ### Validated, not vibed
 
-`evals/` scores the oracle and the extractor against **self-supervised ground truth**: a step clip's last frame is a true "done", the next step's first frames are true "not done". Zero annotation cost. One prompt-tightening pass took completion false-positives from 31% to 0%, and the evals showed the `visual_verifiability` gate was load-bearing. See [`evals/README.md`](evals/README.md).
+`evals/` scores the oracle and the extractor against **self-supervised ground truth**: a step clip's last frame is a true "done", the next step's first frames are true "not done". Zero annotation cost. Across the two largest runs, prompt tightening took early-advance false positives from 31% to 10% at roughly unchanged recall (44% → 41%); the small fixtures that hit 0% false positives did so by collapsing recall, which the harness made visible instead of hiding. The evals also showed the `visual_verifiability` gate was load-bearing. See [`evals/README.md`](evals/README.md).
 
 ### Endpoints
 
