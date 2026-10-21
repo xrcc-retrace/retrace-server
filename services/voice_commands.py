@@ -22,15 +22,18 @@ logger = logging.getLogger(__name__)
 # one directory above services/.
 _YAML_PATH = Path(__file__).resolve().parent.parent / "voice_commands.yaml"
 
-_ALLOWED_MODES = {"learner", "troubleshoot", "global"}
+_ALLOWED_MODES = {"learner", "troubleshoot", "expert_interview", "global"}
 _ALLOWED_HANDLER_TYPES = {"server_tool", "client_tool", "hybrid"}
 _ALLOWED_CONFIRMATIONS = {"none", "soft", "destructive_hold"}
 
 # Modes that include a given command. A "global" command surfaces in both
-# learner and troubleshoot contexts.
+# learner and troubleshoot contexts. The expert interviewer deliberately
+# excludes globals — its mic is only open inside answer windows, so the
+# learner-side help/mute vocabulary doesn't apply.
 _MODE_INCLUSIONS = {
     "learner": {"learner", "global"},
     "troubleshoot": {"troubleshoot", "global"},
+    "expert_interview": {"expert_interview"},
 }
 
 
@@ -78,7 +81,7 @@ def all_commands() -> list[dict]:
 def commands_for_mode(mode: str) -> list[dict]:
     """Return commands available in the given session mode (includes globals)."""
     if mode not in _MODE_INCLUSIONS:
-        raise ValueError(f"unknown mode {mode!r} (expected: learner | troubleshoot)")
+        raise ValueError(f"unknown mode {mode!r} (expected: learner | troubleshoot | expert_interview)")
     wanted = _MODE_INCLUSIONS[mode]
     return [cmd for cmd in _COMMANDS if cmd["mode"] in wanted]
 

@@ -34,6 +34,7 @@ from services.clip_extractor import (
     transcode_lens_variant,
     upload_lens_variant_path,
 )
+from services.expert_interview import store as interview_store
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,15 @@ def refresh_all(force: bool = False, dry_run: bool = False) -> tuple[int, int, i
             logger.info("[would generate] %s → %s", src.name, dst.name)
             generated += 1
             continue
-        if transcode_lens_variant(src, dst):
+        # Full-upload sources re-apply the expert-interview ducking windows so a
+        # regenerated variant doesn't resurrect the assistant's voice. Step clips
+        # were ducked at extraction and their timeline differs — never pass
+        # windows for them.
+        windows = (
+            interview_store.duck_windows(interview_store.load_log_for_video(src))
+            if src.parent == UPLOAD_DIR else None
+        )
+        if transcode_lens_variant(src, dst, windows or None):
             generated += 1
         else:
             failed += 1

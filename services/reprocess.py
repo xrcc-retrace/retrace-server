@@ -35,6 +35,8 @@ from services.clip_extractor import (
     upload_lens_variant_path,
 )
 from services.database import list_stale_video_procedures, save_procedure
+from services.expert_interview import facts as interview_facts
+from services.expert_interview import store as interview_store
 from services.gemini_processor import process_expert_video
 from services.video_probe import probe_duration
 
@@ -53,7 +55,20 @@ async def process_video_into_procedure(
     caller owns the error policy (the upload path marks the row failed and
     deletes the source; the re-extract path leaves the old row intact).
     """
-    gemini_output = await process_expert_video(str(video_path), GEMINI_API_KEY)
+    # Interview log (if the phone uploaded one) is read from disk every run —
+    # first extraction and re-extraction alike — so the facts survive a
+    # pipeline-version bump. If the phone's finalize raced the upload and the
+    # log has Q/A but no facts yet, derive them here (non-fatal).
+    interview = interview_store.load_log(procedure_id)
+    if interview is not None and interview.qa and not interview.facts:
+        interview.facts = await interview_facts.extract_facts(interview)
+        if interview.facts:
+            interview_store.save_log(procedure_id, interview)
+
+    gemini_output = await process_expert_video(
+        str(video_path), GEMINI_API_KEY, interview=interview,
+    )
+    duck_windows = interview_store.duck_windows(interview)
 
     # Clamp Gemini timestamps to the true video bounds.
     clamped_steps: list[dict] = []
@@ -74,7 +89,8 @@ async def process_video_into_procedure(
     # Extract clips
     try:
         clip_paths, failed_steps = await extract_clips(
-            str(video_path), procedure_id, clamped_steps, CLIPS_DIR
+            str(video_path), procedure_id, clamped_steps, CLIPS_DIR,
+            duck_windows=duck_windows,
         )
     except Exception as e:
         logger.error("Clip extraction failed entirely: %s", e)
@@ -85,7 +101,8 @@ async def process_video_into_procedure(
     # "Watch full recording" lens button streams smoothly on first play. Non-fatal.
     asyncio.create_task(
         asyncio.to_thread(
-            transcode_lens_variant, video_path, upload_lens_variant_path(video_path)
+            transcode_lens_variant, video_path, upload_lens_variant_path(video_path),
+            duck_windows,
         )
     )
 

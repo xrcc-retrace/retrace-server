@@ -17,6 +17,50 @@ LENS_VARIANT_SUFFIX = "_lens"
 LENS_ENCODE_VERSION = 2
 
 
+# Gain applied to the audio while the expert-interviewer AI was speaking, so a
+# learner's step clip doesn't carry the assistant's questions. Not 0: a window
+# edge off by ~100 ms would otherwise clip the first syllable of the expert's
+# answer, and at 0.08 (~-22 dB) the question is inaudible under narration.
+DUCK_GAIN = 0.08
+
+# Upper bound on `between()` terms in one `-af` expression. InterviewLog already
+# caps the window list; this keeps the ffmpeg argv bounded even if a caller
+# bypasses the model. Windows past the cap are dropped (audible AI voice in a
+# pathological clip beats a failed extraction).
+MAX_DUCK_TERMS = 256
+
+
+def duck_audio_filter(
+    windows: list[tuple[float, float]] | None,
+    *,
+    offset: float = 0.0,
+    duration: float | None = None,
+) -> str | None:
+    """Build an ffmpeg `-af` expression that ducks `windows` (seconds on the
+    SOURCE timeline). `offset` rebases to an output that starts at
+    `offset` seconds into the source (a step clip); `duration` drops windows
+    that fall outside the output. None when nothing intersects."""
+    if not windows:
+        return None
+    terms: list[str] = []
+    for a, b in windows:
+        if b <= a:
+            continue
+        a2, b2 = a - offset, b - offset
+        if duration is not None:
+            a2, b2 = max(0.0, a2), min(duration, b2)
+            if b2 <= a2:
+                continue
+        terms.append(f"between(t,{a2:.3f},{b2:.3f})")
+        if len(terms) >= MAX_DUCK_TERMS:
+            break
+    if not terms:
+        return None
+    enable = "+".join(terms) if len(terms) > 1 else terms[0]
+    # ffmpeg's enable expression is boolean; summing between() terms ORs them.
+    return f"volume=enable='{enable}':volume={DUCK_GAIN}"
+
+
 def lens_variant_path(clip_path: Path) -> Path:
     """The lens-variant path that sits beside a full clip (step_N.mp4 → step_N_lens.mp4)."""
     return clip_path.with_name(f"{clip_path.stem}{LENS_VARIANT_SUFFIX}{clip_path.suffix}")
@@ -78,8 +122,16 @@ def upload_lens_variant_path(src: Path) -> Path:
     return src.with_name(f"{src.stem}{LENS_VARIANT_SUFFIX}.mp4")
 
 
-def transcode_lens_variant(src_mp4: Path, dst_mp4: Path) -> bool:
+def transcode_lens_variant(
+    src_mp4: Path,
+    dst_mp4: Path,
+    duck_windows: list[tuple[float, float]] | None = None,
+) -> bool:
     """Transcode a full-res step clip into a small, bitrate-capped lens variant.
+
+    `duck_windows` (source-timeline seconds) ducks the expert-interviewer AI's
+    voice; pass it ONLY for full-upload sources — step clips are already ducked
+    at extraction, and their timeline starts at the step, not the upload.
 
     The native glasses lens is a 600x600 viewport fed over the Bluetooth Display
     link, so bytes-to-first-frame dominates playback latency. This downscales to
@@ -133,6 +185,9 @@ def transcode_lens_variant(src_mp4: Path, dst_mp4: Path) -> bool:
         "-movflags", "+faststart",
         str(tmp_mp4),
     ]
+    duck = duck_audio_filter(duck_windows)
+    if duck:
+        cmd[-1:-1] = ["-af", duck]
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600)
         tmp_mp4.replace(dst_mp4)
@@ -153,11 +208,16 @@ async def extract_clips(
     procedure_id: str,
     steps: list[dict],
     output_dir: Path,
+    duck_windows: list[tuple[float, float]] | None = None,
 ) -> tuple[dict[int, str], list[int]]:
     """Extract one MP4 clip per step using the step's timestamp range.
 
     Each clip is re-encoded to H.264+AAC for broad playback compatibility
     (including iOS/glasses). Uses -ss before -i for fast seeking.
+
+    `duck_windows` — [(t0, t1)] on the source timeline during which the
+    expert-interviewer AI was speaking; those spans are ducked in every clip
+    they intersect so learners never hear the assistant's questions.
 
     Returns (success_map, failed_step_numbers). A step fails when duration
     is non-positive or ffmpeg exits non-zero.
@@ -212,10 +272,13 @@ async def extract_clips(
             "-movflags", "+faststart",  # enable streaming playback
             str(output_path),
         ]
+        duck = duck_audio_filter(duck_windows, offset=start, duration=duration)
+        if duck:
+            cmd[-1:-1] = ["-af", duck]
 
         logger.info(
-            "Extracting clip for step %d: %.2fs - %.2fs (%.1fs)",
-            step_num, start, end, duration,
+            "Extracting clip for step %d: %.2fs - %.2fs (%.1fs)%s",
+            step_num, start, end, duration, " [ducked]" if duck else "",
         )
         result = await asyncio.to_thread(
             subprocess.run, cmd, capture_output=True, text=True

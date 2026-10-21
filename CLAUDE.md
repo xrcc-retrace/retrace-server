@@ -130,6 +130,37 @@ iOS app <=== direct Gemini Live WebSocket ===> Gemini
 - `handoff_to_learner` (renamed from `handoff_to_coaching`) promotes the chosen procedure into a normal learner session and returns the full `SessionStartResponse` so the iOS client can open a coaching socket without a second round-trip.
 - A startup fixture loader ingests a bundled Nespresso Vertuo Next descaling manual on a fresh DB so the demo library isn't empty.
 
+### Expert interviewer flow
+
+A Gemini Live session that runs *alongside* expert recording and asks the questions a learner would have needed (socket size, why, how you know it's tight). Full architecture + edge cases: `docs/expert-interviewer-design.md`.
+
+```
+iOS app --[POST voice, transport, task_hint]--> /api/expert/interview/session/start
+       <--[session + interviewer prompt + ephemeral token (NO tools) + policy consts]--
+                                   │
+   every ~5 s while recording      ▼
+iOS app --[frame JPEG + 5 s audio chunk + video_t]--> /session/{id}/observe
+                                   │  Flash PLANNER: transcribes the chunk, keeps a gap ledger,
+                                   │  marks gaps the narration filled, proposes a question
+                                   │  policy.py (pure Python) approves/vetoes: time-sensitive only,
+                                   │  60 s min interval, 6 live asks max, 0.7 confidence floor, dedup
+       <--[{ask?: {question, inject_text, ttl}}]--
+                                   │  phone's pause gate waits for silence, then injects
+                                   │  "[ASK] …" into Live → Live voices it → mic opens for the answer
+iOS app --[question_id, transcript, outcome]--> /session/{id}/answer
+   at Stop:  POST /session/{id}/debrief   → leftover gaps, priority-ordered, + "[DEBRIEF]" inject text
+   before upload:  POST /session/{id}/finalize → server view of the log with Flash-extracted facts
+iOS app --[video + interview (JSON)]--> /api/expert/upload
+                                   │  log persisted to data/interviews/{procedure_id}.json
+                                   │  extraction prompt += EXPERT INTERVIEW NOTES (facts, Q/A, AI speech windows)
+                                   │  clip_extractor ducks the AI's voice (-22 dB) in every clip it intersects
+```
+
+- **Live never decides when to speak.** It only hears the mic inside an *answer window* (right after it asks) — if it heard the narration it would reply to every pause, and 3.1 tokens can't carry `proactivity`. The planner is the only thing that hears the whole narration (as audio chunks it transcribes itself).
+- **The phone owns the log.** The server session is a planner cache; the phone uploads its `InterviewLog` with the video so a server restart between Stop and Upload loses nothing. Re-extraction (`reprocess.py`) re-reads the on-disk log, so facts survive a pipeline-version bump.
+- **Policy is code, not prompt.** `services/expert_interview/policy.py` is pure and covered by `tests/test_interview_policy.py`; the Flash planner only proposes.
+- **No tools in v1.** Facts are derived from the Q/A transcript at finalize. `ephemeral_token.build_live_connect_config` emits no `tools` block when the list is empty (an empty `Tool` is rejected by the API).
+
 ### Bonjour discovery
 
 On startup the server advertises `_retrace._tcp.local.` on port 8000 via zeroconf. The iOS app's `BonjourDiscovery` populates its cached `serverBaseURL` automatically, with a manual-override UI as the fallback. No hardcoded IPs needed when both devices are on the same Wi-Fi.
@@ -144,9 +175,11 @@ main-local-server-test/
 ├── models/
 │   ├── procedure.py           # Per-flow Gemini structured-output schemas (GeminiVideoProcedureOutput / GeminiManualProcedureOutput / GeminiWebProcedureOutput off a shared _BaseProcedureStep) + Procedure / ProcedureStep (API models, with display_summary (condensed ≤160-char lens-card text), completion_criteria, error_criteria, visual_verifiability, clip_status, icon_symbol/icon_emoji/category, sources, parts). visual_verifiability is the `reliable|marginal|none` oracle gate (VisualVerifiability). Plus ProcedureSource (cited web URLs), ProcedurePart (visual parts glossary — video flow only), and StepBoundingBox. source_type ∈ {video, manual, web}
 │   ├── session.py             # Pydantic models for session start/state, StepCompletion (method: "visual" | "verbal"), tool call req/res, ephemeral token response
+│   ├── interview.py           # Expert-interviewer models: session start/observe/answer/debrief wire shapes, PlannerDecision (Flash output), Ask (policy output), InterviewLog (phone-owned, strict — extra="forbid" + required version)
 │   └── troubleshoot.py        # Troubleshoot-mode request/response models (session start, state, handoff, manual upload/status, identified product, candidate procedure, diagnostic log entry)
 ├── routers/
-│   ├── expert.py              # POST /api/expert/upload — async background pipeline, timestamp clamping, per-step status bookkeeping
+│   ├── expert.py              # POST /api/expert/upload (multipart `video` + optional `interview` JSON log) — async background pipeline, timestamp clamping, per-step status bookkeeping
+│   ├── expert_interview.py    # /api/expert/interview/* — start/token/observe/answer/debrief/finalize/state. Planner tick lives in `observe` (single in-flight, idle-skip gate)
 │   ├── expert_manuals.py      # POST /api/expert/manuals/upload + GET /api/expert/manuals/{id} (PDF → SOP) + GET /api/manual_images/{procedure_id}/step_{n}.png (rendered manual page used as the step "clip")
 │   ├── icons.py               # GET /api/icons/{prefix}/{name}.png — Iconify icons rendered as white-on-transparent PNGs, disk-cached
 │   ├── learner.py             # Voices list + session lifecycle (start, tool-call forwarding, state, context summary, token refresh with optional ?handle=)
@@ -169,6 +202,14 @@ main-local-server-test/
 │   ├── icon_renderer.py       # Iconify SVG → white-on-transparent PNG via cairosvg, disk-cached by Iconify ID
 │   ├── voice_commands.py      # Loads voice_commands.yaml at import; prompt builders look up phrasing by command id
 │   ├── fixtures.py            # Startup loader that ingests the bundled Nespresso Vertuo Next descaling manual on a fresh DB. Scheduled non-blocking from main.py's lifespan.
+│   ├── expert_interview/      # Expert interviewer mode (no tool handlers — nothing registers on import)
+│   │   ├── session.py         # Ledger (gaps), Q/A log, transcript, live-ask budget on the shared session dict; to_log() → InterviewLog
+│   │   ├── planner.py         # One Flash call per observe tick (RETRACE_PLANNER_MODEL): transcribe chunk + propose gaps. Idle-skip gate (frame digest + audio RMS). PCM→WAV helper
+│   │   ├── policy.py          # PURE deterministic decisions: dedup, budget, min interval, confidence floor, time-sensitivity, debrief ordering, inject-text formats. Unit-tested
+│   │   ├── prompt.py          # Interviewer Live persona (speaks only on [BRIEFING]/[ASK]/[DEBRIEF] turns); INTERVIEW_TOOL_DEFINITIONS = []
+│   │   ├── facts.py           # Flash: Q/A + transcript → atomic Fact list (at finalize, or at extraction if missing)
+│   │   ├── notes.py           # format_interview_notes(log) → the EXPERT INTERVIEW NOTES prompt section ("" when nothing to say)
+│   │   └── store.py           # data/interviews/{id}.json read/write, duck_windows(), strict parse_upload()
 │   └── troubleshoot/
 │       ├── session.py         # In-memory troubleshoot store, phase transitions (identify → diagnose → fetching-manual → ready-to-coach), diagnostic log
 │       ├── prompt.py          # Troubleshoot-specific system prompt
@@ -190,6 +231,8 @@ main-local-server-test/
 ├── backfill_summaries.py      # One-shot: Flash-condense step descriptions into display_summary (lens glance text) for procedures predating the field — the deliberate alternative to an extraction-version bump
 ├── validate_voice_commands.py # Lint voice_commands.yaml (schema, uniqueness, referenced-from-code checks)
 ├── voice_commands.yaml        # Single source of truth for prompt utterances; designer-editable
+├── tests/
+│   └── test_interview_policy.py  # stdlib unittest: interview policy gates, dedup, debrief ordering, ducking filter rebasing, notes formatter, strict log parsing
 ├── test_live_session.py       # Ad-hoc integration test that drives a Gemini Live session against a running server
 ├── probe_live_models.py       # Which Live model IDs bidiGenerateContent accepts on this API key, plus per-model probes of proactive_audio and video input (curated candidate list)
 ├── probe_list_models.py       # Full models.list() across v1alpha/v1beta/v1 — authoritative source of truth when probe_live_models.py's candidate list comes up empty
@@ -203,6 +246,7 @@ main-local-server-test/
 ├── data/
 │   ├── clips/{procedure_id}/step_{n}.mp4   # plus on-demand step_{n}.jpg (first-frame poster) and step_{n}_done.jpg (last-frame "done state", oracle reference) cached beside each clip
 │   ├── manual_images/{procedure_id}/step_{n}.png   # MANUAL_IMAGES_DIR — rendered manual-page PNGs for manual-sourced procedures
+│   ├── interviews/{procedure_id}.json              # INTERVIEWS_DIR — phone-uploaded expert-interview logs (re-read on every re-extraction)
 │   └── retrace.db             # SQLite (WAL mode)
 └── uploads/                   # Source expert videos ({uuid}.{ext})
 ```
@@ -222,7 +266,24 @@ main-local-server-test/
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/expert/upload` | Multipart video upload. Returns `202 {id, status: "processing"}`; background task runs Gemini analysis + clip extraction. Poll `/api/procedures/{id}` for final status. |
+| `POST` | `/api/expert/upload` | Multipart `video` upload, plus optional `interview` part (JSON `InterviewLog` from the expert interviewer — strict: unknown keys or a missing `version` are a 400, so a stray JSON object can't masquerade as an empty interview). Returns `202 {id, status: "processing", has_interview}`; background task runs Gemini analysis + clip extraction. Poll `/api/procedures/{id}` for final status. |
+
+### Expert interviewer — `/api/expert/interview`
+
+Runs alongside recording; see "Expert interviewer flow" above and `docs/expert-interviewer-design.md`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/expert/interview/session/start` | Body: `{voice?, transport?, task_hint?}`. Returns session id, interviewer prompt, **empty** tool list, Gemini config, ephemeral token, and the `policy` constants (min interval, max live asks, TTL, answer-window lengths, silence threshold) the phone mirrors. |
+| `POST` | `/api/expert/interview/session/{id}/token[?handle=...]` | Resumption-aware token refresh, same semantics as the other modes. |
+| `GET` | `/api/expert/interview/session/{id}/briefing-inject` | `{inject_text}` for the optional one-question pre-roll briefing. |
+| `POST` | `/api/expert/interview/session/{id}/observe` | Multipart: `frame` (JPEG, optional), `audio` (WAV or raw PCM16 mono, optional), `sample_rate`, `video_t` (seconds; null in pre-roll), `phase` (`preroll`/`recording`/`debrief`), `speaking` (phone VAD). Returns `status` (`ok` / `quiet` / `skipped` / `planner_unavailable` / `finalized`), an optional `ask {question_id, topic_key, priority, question, ttl_seconds, inject_text}`, counters, and `open_answer_window` when the expert addressed the assistant. Single in-flight tick; idle ticks (unchanged frame + silent audio) skip the model call. |
+| `POST` | `/api/expert/interview/session/{id}/answer` | Body: `{question_id, transcript, outcome: answered\|unanswered\|skipped\|interrupted\|deferred, t_ask?, t_close?}`. Closes the gap; starts the min-interval clock; "stop asking" in the transcript flips quiet mode. |
+| `POST` | `/api/expert/interview/session/{id}/debrief` | Body: `{max_questions?}`. Priority-ordered leftover gaps + `[DEBRIEF]` inject text. Idempotent. |
+| `POST` | `/api/expert/interview/session/{id}/finalize` | Server view of the `InterviewLog` with Flash-extracted `facts`. The phone merges this with its own copy (which also carries `ai_speech_windows`) and uploads the result. |
+| `GET` | `/api/expert/interview/session/{id}/state` | Phase, quiet mode, budget, full gap ledger, Q/A. |
+| `DELETE` | `/api/expert/interview/session/{id}` | End and discard. |
+| `GET` | `/api/expert/interview/sessions` | List active interview sessions. |
 | `POST` | `/api/expert/manuals/upload` | Multipart PDF manual upload. Returns `202 {manual_id}`; background task runs `services.manual_ingest.process_pdf(mode="expert")` → new procedure with `source_type="manual"`. Per-step manual-page PNG is written to `step.clip_url` so the iOS client renders it where it would normally render a clip. |
 | `GET` | `/api/expert/manuals/{manual_id}` | Poll ingest status + (when ready) the resulting `procedure_id`. |
 | `GET` | `/api/manual_images/{procedure_id}/step_{n}.png` | Rendered manual-page PNG used in place of an MP4 clip for manual-sourced procedures. |
@@ -299,7 +360,11 @@ These settings are locked into every ephemeral token so the phone can't change t
 
 ## Testing
 
-No test framework — manual testing via curl and the dashboard at `/`.
+Mostly manual testing via curl and the dashboard at `/`. The one unit-test suite covers the expert-interview policy (pure Python, no Gemini):
+
+```bash
+python -m unittest tests.test_interview_policy -v
+```
 
 ```bash
 # Health
@@ -351,3 +416,5 @@ The `completion_criteria` string on each step is what the **verification oracle*
 - **Don't commit `.env`.** Put real API keys there and let `python-dotenv` load them.
 - **Session memory leak hazard.** The iOS client fires a best-effort `DELETE /session/{id}` on session end. If that request is lost, the in-memory dict grows until the server restarts. It's a hackathon tradeoff — don't "fix" by persisting sessions unless the Live-session lifecycle also moves to DB.
 - **Prompt changes require re-minting tokens.** System prompts are baked into the ephemeral token. Updating `prompt_builder.py` only affects sessions started after the change; in-flight tokens still carry the old prompt.
+- **`generate_content` rejects deadlines under 10 s.** `HttpOptions(timeout=…)` below 10_000 ms fails with `400 "Manually set deadline 8s is too short. Minimum allowed deadline is 10s"` (verified 2026-10-15). The oracle's and planner's 10_000 are the floor, not a tuning knob — don't lower them.
+- **`echo "$json"` in zsh mangles JSON.** zsh's `echo` expands `\n` escapes inside strings; pipe curl straight to a file or `python -m json.tool` when inspecting API responses.

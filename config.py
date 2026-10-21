@@ -11,6 +11,9 @@ DATA_DIR = BASE_DIR / "data"
 CLIPS_DIR = DATA_DIR / "clips"
 MANUAL_IMAGES_DIR = DATA_DIR / "manual_images"
 REFERENCE_IMAGES_DIR = DATA_DIR / "reference_images"
+# Phone-uploaded expert-interview logs ({procedure_id}.json), persisted next
+# to the source video so re-extraction keeps the facts (services/expert_interview/store.py).
+INTERVIEWS_DIR = DATA_DIR / "interviews"
 DB_PATH = DATA_DIR / "retrace.db"
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -28,6 +31,9 @@ GEMINI_MODEL = "gemini-2.5-pro"
 # NOTE: steps.display_summary (2026-07-02) was deliberately NOT bumped for —
 # existing rows were backfilled via backfill_summaries.py instead, to avoid
 # wholesale-overwriting hand-edited parts glossaries and step text.
+# NOTE: the expert-interview notes section (2026-10-15) was also NOT bumped
+# for — it is appended to the prompt only when an interview log exists for
+# the procedure, so every pre-existing row extracts byte-identically.
 EXTRACTION_PIPELINE_VERSION = os.environ.get(
     "RETRACE_EXTRACTION_VERSION",
     "2026-07-02-spatial-criteria",
@@ -53,9 +59,18 @@ RETRACE_ORACLE_MODEL = os.environ.get(
     "gemini-3.5-flash",
 )
 
+# Expert-interview planner: the Flash call behind POST
+# /api/expert/interview/{id}/observe (transcribes the narration chunk, keeps
+# the gap ledger, proposes questions) and the facts extractor at finalize.
+# Same model family as the oracle for the same latency reasons.
+RETRACE_PLANNER_MODEL = os.environ.get(
+    "RETRACE_PLANNER_MODEL",
+    RETRACE_ORACLE_MODEL,
+)
+
 # Find ffmpeg binary
 FFMPEG_PATH = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
 
 # Ensure directories exist
-for d in [UPLOAD_DIR, DATA_DIR, CLIPS_DIR, MANUAL_IMAGES_DIR, REFERENCE_IMAGES_DIR]:
+for d in [UPLOAD_DIR, DATA_DIR, CLIPS_DIR, MANUAL_IMAGES_DIR, REFERENCE_IMAGES_DIR, INTERVIEWS_DIR]:
     d.mkdir(parents=True, exist_ok=True)

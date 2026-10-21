@@ -12,9 +12,11 @@ from config import GEMINI_API_KEY, UPLOAD_DIR, REFERENCE_IMAGES_DIR
 from services.database import (
     create_procedure_placeholder,
     get_procedure,
+    set_procedure_has_interview,
     set_procedure_reference_image,
     update_procedure_status,
 )
+from services.expert_interview import store as interview_store
 from services.reprocess import process_video_into_procedure
 from services.video_probe import probe_duration
 
@@ -22,14 +24,40 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/expert", tags=["expert"])
 
+# The interview log is small structured JSON (tens of KB for a long session);
+# anything near this is a bug or abuse, not a bigger interview.
+MAX_INTERVIEW_LOG_BYTES = 2 * 1024 * 1024
+
 
 @router.post("/upload", status_code=202)
-async def upload_expert_video(video: UploadFile = File(...)):
-    """Receive an expert recording and start background processing."""
+async def upload_expert_video(
+    video: UploadFile = File(...),
+    interview: UploadFile | None = File(None),
+):
+    """Receive an expert recording and start background processing.
+
+    `interview` (optional) is the phone-owned expert-interview log (JSON,
+    `models.interview.InterviewLog`). It is validated and persisted to
+    data/interviews/{procedure_id}.json BEFORE the placeholder row is created,
+    so both the first extraction and every later re-extraction read the same
+    facts. A malformed log is a 400 — silently dropping it would make the
+    resulting procedure look like the interview never happened.
+    """
     if not GEMINI_API_KEY:
         raise HTTPException(500, "GEMINI_API_KEY not configured")
 
     procedure_id = str(uuid.uuid4())
+
+    interview_log = None
+    if interview is not None:
+        raw = await interview.read(MAX_INTERVIEW_LOG_BYTES + 1)
+        if len(raw) > MAX_INTERVIEW_LOG_BYTES:
+            raise HTTPException(413, "Interview log too large")
+        if raw.strip():
+            try:
+                interview_log = interview_store.parse_upload(raw)
+            except ValueError as exc:
+                raise HTTPException(400, f"Invalid interview log: {exc}") from exc
 
     # Save uploaded file, preserving original extension
     ext = Path(video.filename).suffix if video.filename else ".mp4"
@@ -54,10 +82,14 @@ async def upload_expert_video(video: UploadFile = File(...)):
     created_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     create_procedure_placeholder(procedure_id, str(video_path), created_at)
 
+    if interview_log is not None:
+        interview_store.save_log(procedure_id, interview_log)
+        set_procedure_has_interview(procedure_id, True)
+
     # Fire-and-forget background processing
     asyncio.create_task(_process_video(procedure_id, video_path, actual_duration))
 
-    return {"id": procedure_id, "status": "processing"}
+    return {"id": procedure_id, "status": "processing", "has_interview": interview_log is not None}
 
 
 @router.post("/procedures/{procedure_id}/reference-image")
@@ -128,3 +160,5 @@ async def _process_video(procedure_id: str, video_path: Path, actual_duration: f
             logger.info("Deleted failed upload source: %s", video_path)
         except OSError as unlink_err:
             logger.warning("Failed to delete %s: %s", video_path, unlink_err)
+        # No source video → the interview log can never be re-applied.
+        interview_store.delete_log(procedure_id)

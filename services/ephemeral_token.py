@@ -64,6 +64,8 @@ def build_live_connect_config(
         system_instruction=types.Content(
             parts=[types.Part(text=system_instruction)]
         ),
+        # A Tool with zero function_declarations is rejected by the API; modes
+        # with no tools (expert interviewer) pass [] and get no tools block.
         tools=[types.Tool(function_declarations=[
             types.FunctionDeclaration(
                 name=t["name"],
@@ -71,7 +73,7 @@ def build_live_connect_config(
                 parameters=t["parameters"],
             )
             for t in tools
-        ])],
+        ])] if tools else None,
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(
