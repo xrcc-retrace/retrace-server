@@ -6,10 +6,10 @@
 
 ### Record an expert once. Coach every learner forever.
 
-FastAPI control plane for **Retrace**, an AI coaching system for hands-on tasks, built for the XRCC Berlin 2026 hackathon (🥈 2nd place).
+FastAPI control plane for **Retrace**, an AI coaching system for hands-on tasks. 🥈 2nd place at the XRCC Berlin 2026 hackathon; work continued through 2026.
 An expert records a task once on Ray-Ban Meta glasses or an iPhone. Gemini turns the video into a structured procedure. Learners are then coached by voice, hands-free, while a visual oracle checks their work.
 
-[**▶ Demo**](https://www.youtube.com/watch?v=azK-CLpyRQg) · [**🎬 Full walkthrough**](https://www.youtube.com/watch?v=CqUj5HtP0QE) · [**📱 iOS client**](https://github.com/hshwang34/retrace-ios)
+[**🌐 retracelab.com**](https://retracelab.com) · [**▶ Demo**](https://www.youtube.com/watch?v=azK-CLpyRQg) · [**🎬 Full walkthrough**](https://www.youtube.com/watch?v=CqUj5HtP0QE) · [**📱 iOS client**](https://github.com/hshwang34/retrace-ios) (private)
 
 </div>
 
