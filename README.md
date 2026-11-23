@@ -9,7 +9,7 @@
 FastAPI control plane for **Retrace**, an AI coaching system for hands-on tasks. 🥈 2nd place at the XRCC Berlin 2026 hackathon; work continued through 2026.
 An expert records a task once on Ray-Ban Meta glasses or an iPhone. Gemini turns the video into a structured procedure. Learners are then coached by voice, hands-free, while a visual oracle checks their work.
 
-[**🌐 retracelab.com**](https://retracelab.com) · [**▶ Demo**](https://www.youtube.com/watch?v=azK-CLpyRQg) · [**🎬 Full walkthrough**](https://www.youtube.com/watch?v=CqUj5HtP0QE) · [**📱 iOS client**](https://github.com/hshwang34/retrace-ios)
+[**🌐 retracelab.com**](https://retracelab.com) · [**▶ Demo**](https://www.youtube.com/watch?v=azK-CLpyRQg) · [**🎬 Full walkthrough**](https://www.youtube.com/watch?v=CqUj5HtP0QE) · [**📱 iOS client**](https://github.com/xrcc-retrace/retrace-ios)
 
 </div>
 
@@ -281,6 +281,6 @@ docs/                          expert-interviewer-design.md
 
 <div align="center">
 
-Built at XRCC Berlin 2026 by Hyunseok Hwang and Arthur Lee · iOS client: [hshwang34/retrace-ios](https://github.com/hshwang34/retrace-ios)
+Built at XRCC Berlin 2026 by Hyunseok Hwang and Arthur Lee · iOS client: [xrcc-retrace/retrace-ios](https://github.com/xrcc-retrace/retrace-ios)
 
 </div>
