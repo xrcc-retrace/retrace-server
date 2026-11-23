@@ -9,7 +9,7 @@
 FastAPI control plane for **Retrace**, an AI coaching system for hands-on tasks. 🥈 2nd place at the XRCC Berlin 2026 hackathon; work continued through 2026.
 An expert records a task once on Ray-Ban Meta glasses or an iPhone. Gemini turns the video into a structured procedure. Learners are then coached by voice, hands-free, while a visual oracle checks their work.
 
-[**🌐 retracelab.com**](https://retracelab.com) · [**▶ Demo**](https://www.youtube.com/watch?v=azK-CLpyRQg) · [**🎬 Full walkthrough**](https://www.youtube.com/watch?v=CqUj5HtP0QE) · [**📱 iOS client**](https://github.com/hshwang34/retrace-ios) (private)
+[**🌐 retracelab.com**](https://retracelab.com) · [**▶ Demo**](https://www.youtube.com/watch?v=azK-CLpyRQg) · [**🎬 Full walkthrough**](https://www.youtube.com/watch?v=CqUj5HtP0QE) · [**📱 iOS client**](https://github.com/hshwang34/retrace-ios)
 
 </div>
 
@@ -230,7 +230,7 @@ python main.py          # http://0.0.0.0:8000, dashboard at /
 | `RETRACE_LIVE_MODEL` / `RETRACE_ORACLE_MODEL` / `RETRACE_PLANNER_MODEL` | see above | model overrides |
 
 ```bash
-curl -F "video=@test_data/some_video.mp4" localhost:8000/api/expert/upload
+curl -F "video=@/path/to/your_recording.mp4" localhost:8000/api/expert/upload   # sample videos are not shipped in the repo
 python -m unittest tests.test_interview_policy        # 25 policy/ducking/parse tests
 python evals/run_all.py                               # oracle + extractor evals
 python -m gemini_live_playground --procedure-id <id>  # REPL against the production Live config
@@ -274,6 +274,10 @@ docs/                          expert-interviewer-design.md
 ```
 
 ---
+
+## License
+
+[MIT](LICENSE). Demo recordings, the local database and third-party product manuals are not included; the startup fixture loader downloads the Nespresso descaling guide from nespresso.com on first run.
 
 <div align="center">
 

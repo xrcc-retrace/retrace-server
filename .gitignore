@@ -38,3 +38,9 @@ evals/fixtures/*
 !evals/fixtures/staged/
 evals/reports/
 .claude/worktrees/
+
+# Never commit local media, scratch output or third-party manuals.
+test_data/
+tmp/
+fixtures/*.pdf
+.DS_Store
